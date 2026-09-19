@@ -1,0 +1,45 @@
+# Local Python environments and build artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+# Runtime data, credentials, recordings and private transcripts
+.env
+.env.*
+!.env.example
+runtime/
+logs/
+*.log
+*.sock
+*.pid
+*.lock
+transcript*.json
+last-transcript.txt
+status.json
+hud-status.json
+*.wav
+*.aiff
+*.webm
+*.app/
+*.dmg
+*.zip
+*.pem
+*.key
+auth*.json
+credentials*.json
+
+# IPC capability and local development metadata
+engine-auth.json
+runtime.json
+INSTALL.txt
+DO_NOT_PUBLISH.txt
+work/
+security-audit/

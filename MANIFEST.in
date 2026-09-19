@@ -1,0 +1,8 @@
+include README.md LICENSE-DECISION.md SECURITY.md privacy-policy.json
+recursive-include docs *.md
+recursive-include scripts *.py
+recursive-include packaging *.md *.plist
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod] *.log *.sock *.pid
+
+global-exclude .env .env.* auth*.json credentials*.json transcript*.json engine-auth.json last-transcript.txt status.json hud-status.json
