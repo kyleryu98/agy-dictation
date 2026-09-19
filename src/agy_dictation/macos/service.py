@@ -389,6 +389,24 @@ def delivered_text_matches(expected, actual):
     return isinstance(actual, str) and (actual == expected or actual == expected + "\n")
 
 
+def pending_input_snapshot(s, actual):
+    """Accept stale readback only when it is a known stage of our own insertion."""
+    if not isinstance(actual, str) or not s.get("input_written"):
+        return False
+    baseline = s.get("input_baseline")
+    if baseline is None:
+        return False
+    if actual == baseline:
+        return True
+    prefix, suffix = s["input_context"]
+    if not actual.startswith(prefix) or not actual.endswith(suffix):
+        return False
+    end = len(actual) - len(suffix) if suffix else len(actual)
+    if end < len(prefix):
+        return False
+    return s["input_sent"].startswith(actual[len(prefix):end])
+
+
 def target_state(s, *, final=False):
     """Read AX as an asynchronous snapshot, never log values or selection offsets."""
     if final and s["before"] is not None:
@@ -397,6 +415,11 @@ def target_state(s, *, final=False):
         actual = value(s["target"])
         if delivered_text_matches(s["before"], actual):
             return "confirmed"
+        selected = selection_range(s["target"])
+        if (selected is not None and selected == s.get("range")
+                and selected == selection_range(s["target"])
+                and pending_input_snapshot(s, actual)):
+            return "cursor_confirmed"
         return "text_pending_" + text_relation(s["before"], actual)
     if s.get("range") is None:
         return "selection_unavailable"
@@ -429,6 +452,8 @@ def target_state(s, *, final=False):
     if s.get("input_written") and s["before"] is not None:
         matches = delivered_text_matches(s["before"], actual)
     if s["before"] is not None and not matches:
+        if selected == s["range"] and pending_input_snapshot(s, actual):
+            return "cursor_confirmed"
         return "text_pending_" + text_relation(s["before"], actual)
     if selected != s["range"]:
         return "selection_pending"
@@ -443,6 +468,7 @@ def wait_for_target(s, *, final=False, after_input=False, timeout=2.0):
     """Pause writes through stale/intermediate AX data; never resend a chunk."""
     deadline = time.monotonic() + timeout
     stable_since = None
+    stable_state = None
     pending = None
     state = "unavailable"
     while time.monotonic() < deadline:
@@ -453,18 +479,29 @@ def wait_for_target(s, *, final=False, after_input=False, timeout=2.0):
             logging.info("input verification stopped reason=%s", state)
             detail = "일부만 입력됐을 수 있어요." if after_input else "자동 입력하지 않았어요."
             raise BridgeError("입력 위치가 바뀌어 중단했습니다. " + detail)
-        if state == "confirmed":
-            if stable_since is None:
+        if state in {"confirmed", "cursor_confirmed"}:
+            if stable_since is None or stable_state != state:
                 stable_since = time.monotonic()
+                stable_state = state
             elif time.monotonic() - stable_since >= 0.04:
-                if pending is not None:
-                    logging.info("input verification recovered reason=%s", pending)
-                return
+                if state == "confirmed" or not final:
+                    if pending is not None:
+                        logging.info("input verification recovered reason=%s", pending)
+                    return state == "confirmed"
         else:
             stable_since = None
             pending = state
         time.sleep(0.02)
-    logging.info("input verification timeout reason=%s final=%s", state, final)
+    if (state == "cursor_confirmed" and stable_since is not None
+            and time.monotonic() - stable_since >= 0.04):
+        logging.info("input sent; caret confirmed, text readback pending")
+        return False
+    selected = selection_range(s["target"])
+    logging.info(
+        "input verification timeout reason=%s final=%s caret_matches=%s known_snapshot=%s",
+        state, final, selected is not None and selected == s.get("range"),
+        pending_input_snapshot(s, value(s["target"])),
+    )
     if final and after_input:
         raise InputUnconfirmed("입력은 보냈지만 결과를 확인하지 못했어요. 전체 문장은 복구 파일에 보관했습니다.")
     if after_input:
@@ -510,8 +547,17 @@ def insertion_result(s, text):
             expected = (original[:location * 2] + encoded + original[(location + length) * 2:]).decode("utf-16-le")
         except UnicodeDecodeError:
             raise BridgeError("커서 위치를 확인할 수 없어 자동 입력을 중단했습니다.") from None
-    return {**s, "range": (location + len(encoded) // 2, 0),
-            "before": expected, "input_written": True}
+    result = {**s, "range": (location + len(encoded) // 2, 0),
+              "before": expected, "input_written": True}
+    if "input_baseline" not in s:
+        result["input_baseline"] = s["before"]
+        if s["before"] is not None:
+            result["input_context"] = (
+                original[:location * 2].decode("utf-16-le"),
+                original[(location + length) * 2:].decode("utf-16-le"),
+            )
+    result["input_sent"] = s.get("input_sent", "") + text
+    return result
 
 
 def check_input_keys():
@@ -551,9 +597,9 @@ def inject(text, s):
             Q.CGEventPost(Q.kCGHIDEventTap, event)
         # Wait for acknowledgement before sending another chunk. Never keep typing
         # after a same-field cursor move, inaccessible selection or rejected event.
-        wait_for_target(confirmed, final=index == len(chunks) - 1, after_input=True)
+        verified = wait_for_target(confirmed, final=index == len(chunks) - 1, after_input=True)
         current = confirmed
-    return current["before"] is not None
+    return current["before"] is not None and verified is not False
 
 
 def save_recovery(text):
@@ -616,7 +662,7 @@ def worker():
                         beep("Pop")
                         (BASE / "last-transcript.txt").unlink(missing_ok=True)
                     else:
-                        status("unconfirmed", "입력은 보냈지만 대상 앱의 텍스트를 확인할 수 없어요.")
+                        status("sent", "입력 전송 완료 · 전사문 보관됨")
             except Exception as e:
                 if not isinstance(e, BridgeError):
                     logging.error("bridge failed type=%s", type(e).__name__)

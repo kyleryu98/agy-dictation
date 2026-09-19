@@ -55,17 +55,30 @@ path and never resends an unacknowledged chunk.
 
 Text reads prefer `AXStringForRange` with a stable character count and matching
 UTF-16 length, then fall back to `AXValue`. After writing, a single extra terminal
-newline in the exposed value is tolerated. Missing text, missing spaces or existing
-newlines, and internal line-break changes are not normalized away. Before any
-subsequent keyboard chunk, both the original field's text and its caret must be
-acknowledged while that field remains focused.
+newline in the exposed value is tolerated. Full-text confirmation does not discard
+missing characters or whitespace. Before the first write, the captured content
+and selection must still match exactly.
+
+Before each subsequent keyboard chunk, the original field must remain focused and
+its caret must stably match the expected UTF-16 position. Some editors keep stale
+text readback after moving their caret. A caret acknowledgement can therefore
+permit the next chunk when the text is exactly the original baseline, or an earlier
+stage of this insertion with the original neighboring text preserved. Unrelated
+text changes, a missing original suffix, a moved/unknown caret and changed focus
+still stop delivery. The service never resends a chunk to resolve stale readback.
 
 After the final write there are no more characters to send. Completion checks the
 captured field directly, so switching to another app does not invalidate text that
-has already arrived. An unconfirmed final write keeps the recovery transcript and
-shows an uncertainty HUD, without a success sound, retry, or claim that insertion
-definitely failed. This acknowledgement timeout is separate from provider
-transcription finalization.
+has already arrived. A full text match confirms insertion. If the final caret is
+confirmed but text readback remains at a known earlier stage, the HUD reports
+"input sent" and retains the recovery transcript; it does not claim verified text
+or interrupt an otherwise acknowledged sentence. A final write without either
+form of acknowledgement still produces the uncertainty HUD. This acknowledgement
+timeout is separate from provider transcription finalization.
+
+The non-activating HUD paints a rounded dark background on a transparent view.
+It does not use a behind-window visual effect whose rectangular backing can remain
+visible outside a layer's rounded corners.
 
 API references: Apple's [text range attribute](https://developer.apple.com/documentation/applicationservices/kaxstringforrangeparameterizedattribute)
 and [Unicode keyboard event documentation](https://developer.apple.com/documentation/coregraphics/cgevent/keyboardsetunicodestring(stringlength:unicodestring:)).

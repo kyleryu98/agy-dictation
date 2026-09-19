@@ -247,3 +247,38 @@ automated test suite. No messages or forms were submitted.
   repository, and its restart reached `idle`. Broader app/IME and natural-voice
   acceptance remain unverified; the earlier native-write design is superseded by
   this correction.
+
+## 2026-09-19 failed natural-voice report and HUD correction
+
+- The user supplied a new screenshot after speaking the requested test sentence.
+  Only the first 16 UTF-16 units were visible, and the HUD reported incomplete
+  insertion. Contemporaneous fixed-code logs recorded `text_pending_prefix` with
+  `final=False`. This disproves acceptance of the previous repair. The screenshot
+  also shows a white rectangular backing outside the HUD's rounded corners.
+- The old chunk gate can reject an already-delivered chunk solely because AX text
+  readback is stale, without considering a correctly advanced caret. A regression
+  models the reported first-chunk cutoff with stale text and stable caret progress:
+  it fails with the previous version's same timeout and passes with the new code.
+  The original incident logs did not include caret evidence, so this model is not
+  presented as a reconstruction of every native AX snapshot from that incident.
+- Input now has separate full-text and cursor acknowledgements. Cursor-only
+  acknowledgement requires the same focused field, a stable exact expected caret,
+  and readback equal to the captured baseline or an earlier stage of our own input.
+  Existing prefix/suffix context must be preserved. First-write validation,
+  unexpected text, cursor changes, cancellation and actual app/field switches
+  remain guarded. All chunks are sent without retrying when those conditions hold.
+- If only cursor acknowledgement is available at the end, the HUD reports input
+  sent and keeps recovery text rather than reporting incomplete insertion or
+  claiming a verified full-text match. Timeout diagnostics now add only boolean
+  caret/snapshot indicators; no text or offsets are logged.
+- The visual-effect background was replaced by an explicitly painted rounded
+  transparent view. Native AppKit offscreen rendering measured zero alpha at all
+  four corners, with a nonzero dark center. The panel stayed hidden/non-key and
+  the foreground application was unchanged during this rendering check. This is
+  rendering evidence, not a new live microphone or window-compositor test.
+- All 161 unit tests, 62 relevant policy tests against staged installed files and
+  Ruff passed. The installed service/HUD were privately backed up and updated,
+  their bytes matched the tested stage, and a new process reached `idle`.
+- No microphone, real typing, new test input windows or permission changes were
+  used in this follow-up. Natural-voice acceptance in the user's actual editor is
+  still required before claiming the truncation issue fully resolved.

@@ -21,6 +21,8 @@ def presentation(kind, detail=""):
         return ("입력 중", "현재 커서에 넣고 있어요", True, "blue")
     if kind == "unconfirmed":
         return ("입력 확인이 필요해요", "입력칸을 확인해 주세요 · 복구문 보관됨", False, "orange")
+    if kind == "sent":
+        return ("입력 전송 완료", "", False, "gray")
     if kind == "error":
         title = "입력을 완료하지 못했어요" if "일부만" in detail else "입력하지 못했어요"
         return (title, detail, False, "orange")
@@ -37,6 +39,21 @@ class PassivePanel(A.NSPanel):
 
     def canBecomeMainWindow(self):
         return False
+
+
+class HUDBackground(A.NSView):
+    """Paint only the rounded area; do not rely on backdrop-effect clipping."""
+
+    def isOpaque(self):
+        return False
+
+    def drawRect_(self, rect):
+        A.NSColor.clearColor().set()
+        A.NSRectFillUsingOperation(self.bounds(), A.NSCompositingOperationCopy)
+        A.NSColor.colorWithCalibratedWhite_alpha_(0.16, 0.97).setFill()
+        A.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            self.bounds(), 20, 20
+        ).fill()
 
 
 class Actions(F.NSObject):
@@ -84,13 +101,7 @@ class DictationHUD:
             | A.NSWindowCollectionBehaviorIgnoresCycle
         )
         self.panel.setAppearance_(A.NSAppearance.appearanceNamed_(A.NSAppearanceNameDarkAqua))
-        view = A.NSVisualEffectView.alloc().initWithFrame_(A.NSMakeRect(0, 0, 336, 88))
-        view.setMaterial_(A.NSVisualEffectMaterialHUDWindow)
-        view.setBlendingMode_(A.NSVisualEffectBlendingModeBehindWindow)
-        view.setState_(A.NSVisualEffectStateActive)
-        view.setWantsLayer_(True)
-        view.layer().setCornerRadius_(20)
-        view.layer().setMasksToBounds_(True)
+        view = HUDBackground.alloc().initWithFrame_(A.NSMakeRect(0, 0, 336, 88))
         self.panel.setContentView_(view)
         self.dot = A.NSView.alloc().initWithFrame_(A.NSMakeRect(20, 54, 10, 10))
         self.dot.setWantsLayer_(True)

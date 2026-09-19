@@ -35,7 +35,7 @@ if sys.platform != "win32":
         sys.modules,
         {
             "ApplicationServices": MagicMock(),
-            "AppKit": SimpleNamespace(NSPanel=object),
+            "AppKit": SimpleNamespace(NSPanel=object, NSView=object),
             "Foundation": SimpleNamespace(NSObject=object),
             "Quartz": quartz,
             "CoreFoundation": MagicMock(),
@@ -201,7 +201,7 @@ class MacOSTests(unittest.TestCase):
                     with self.assertRaises(StopWorker):
                         b.worker()
                 save.assert_called_once_with("synthetic example")
-                self.assertEqual(status.call_args.args[0], "unconfirmed")
+                self.assertEqual(status.call_args.args[0], "sent" if result is False else "unconfirmed")
                 base.__truediv__.return_value.unlink.assert_not_called()
                 beep.assert_not_called()
                 notify.assert_not_called()
@@ -450,6 +450,71 @@ class FocusCompatibilityTests(unittest.TestCase):
         self.assertEqual("".join(state["writes"]), text)
         write.assert_not_called()
         self.assertGreater(events.call_count, 2)
+
+    def test_stale_text_with_confirmed_caret_does_not_cut_sentence_at_first_chunk(self):
+        text = "음성 입력 테스트입니다. 문장 끝까지 확인합니다. 마지막 단어는 해바라기입니다."
+        with self.editor(before="", selected=(0, 0)) as (target, state, write, events):
+            with patch.object(b, "value", return_value=target["before"]):
+                self.assertFalse(b.inject(text, target))
+        self.assertEqual(state["text"], text)
+        self.assertEqual("".join(state["writes"]), text)
+        self.assertEqual(events.call_count, 2 * len(state["writes"]))
+        write.assert_not_called()
+
+    def test_partial_text_readback_only_accepts_prefixes_of_our_own_input(self):
+        text = "123456789012345 다음 문장 끝까지 확인합니다."
+        with self.editor(before="", selected=(0, 0)) as (target, state, write, events):
+            with patch.object(b, "value", side_effect=lambda _: text[:5] if state["writes"] else ""):
+                self.assertFalse(b.inject(text, target))
+        self.assertEqual(state["text"], text)
+        self.assertEqual("".join(state["writes"]), text)
+        write.assert_not_called()
+
+    def test_stale_readback_requires_matching_caret_before_more_input(self):
+        with self.editor() as (target, state, write, events):
+            with (
+                patch.object(b, "value", return_value=target["before"]),
+                patch.object(b, "selection_range", return_value=target["range"]),
+            ):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("x" * 40, target)
+        self.assertEqual(state["writes"], ["x" * 16])
+        self.assertEqual(events.call_count, 2)
+        write.assert_not_called()
+
+    def test_unrelated_text_change_cannot_use_cursor_only_acknowledgement(self):
+        with self.editor() as (target, state, write, events):
+            with patch.object(b, "value", side_effect=lambda _: "changed baseline" if state["writes"] else target["before"]):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("x" * 40, target)
+        self.assertEqual(state["writes"], ["x" * 16])
+        self.assertEqual(events.call_count, 2)
+        write.assert_not_called()
+
+    def test_cursor_ack_is_not_available_before_first_write(self):
+        with self.editor() as (target, state, write, events):
+            with patch.object(b, "value", return_value=""):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("new text", target)
+        self.assertEqual(state["text"], "A😀B")
+        events.assert_not_called()
+        write.assert_not_called()
+
+    def test_missing_preserved_suffix_is_not_mistaken_for_readback_lag(self):
+        with self.editor() as (target, state, write, events):
+            with patch.object(b, "value", side_effect=lambda _: state["text"][:-1] if state["writes"] else target["before"]):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("x" * 40, target)
+        self.assertEqual(state["writes"], ["x" * 16])
+        self.assertEqual(events.call_count, 2)
+
+    def test_completed_cursor_ack_survives_app_switch_without_false_failure(self):
+        with self.editor(switch_after_write=True) as (target, state, write, events):
+            with patch.object(b, "value", return_value=target["before"]):
+                self.assertFalse(b.inject("complete", target))
+        self.assertEqual(state["text"], "AcompleteB")
+        self.assertEqual(events.call_count, 2)
+        write.assert_not_called()
 
     def test_advertised_native_setter_is_never_used(self):
         # Chrome advertises this setter and returns zero but can leave text unchanged.
@@ -936,6 +1001,12 @@ class FocusCompatibilityTests(unittest.TestCase):
         self.assertIn("복구문", detail)
         self.assertFalse(busy)
         self.assertEqual(color, "orange")
+
+    def test_sent_with_lagging_readback_is_not_presented_as_failed_input(self):
+        title, _, busy, color = presentation("sent")
+        self.assertEqual(title, "입력 전송 완료")
+        self.assertFalse(busy)
+        self.assertEqual(color, "gray")
 
     def test_text_mismatch_diagnostics_return_codes_without_contents(self):
         for expected, actual, code in (
