@@ -27,7 +27,17 @@ status.json
 hud-status.json
 *.wav
 *.aiff
+*.aif
+*.mp3
+*.m4a
+*.aac
+*.caf
+*.flac
+*.ogg
+*.opus
 *.webm
+*.mp4
+*.m4v
 *.app/
 *.dmg
 *.zip
@@ -35,6 +45,15 @@ hud-status.json
 *.key
 auth*.json
 credentials*.json
+recordings/
+transcripts/
+voice-session/
+backups/
+*.sqlite
+*.sqlite3
+*.db
+*.p12
+*.pfx
 
 # IPC capability and local development metadata
 engine-auth.json

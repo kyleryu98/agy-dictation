@@ -288,8 +288,11 @@ class MacOSTests(unittest.TestCase):
             ("input", "AXRole"): "AXTextArea",
             ("input", "AXFocused"): True,
         }
-        with patch.object(
-            b, "attr", side_effect=lambda el, key, default=None: attrs.get((el, key), default)
+        with (
+            patch.object(
+                b, "attr", side_effect=lambda el, key, default=None: attrs.get((el, key), default)
+            ),
+            patch.object(b, "same", side_effect=lambda a, c: a == c),
         ):
             self.assertEqual(b.focused_input("root"), "input")
             attrs[("input", "AXFocused")] = False
@@ -309,3 +312,246 @@ class MacOSTests(unittest.TestCase):
             with self.assertRaises(b.BridgeError):
                 b.inject("safe text", {})
             post.assert_not_called()
+
+
+@unittest.skipIf(sys.platform == "win32", "POSIX service policy")
+class FocusCompatibilityTests(unittest.TestCase):
+    """Synthetic accessibility trees only: no UI, typing, permission or mic calls."""
+
+    def setUp(self):
+        b.cancel_requested.clear()
+        self.attrs = {}
+        for patcher in (
+            patch.object(b, "attr", side_effect=self.read_attribute),
+            patch.object(b, "same", side_effect=lambda a, c: a == c),
+            patch.object(b.AX, "AXUIElementIsAttributeSettable", return_value=(-25205, False)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def read_attribute(self, el, key, default=None):
+        return self.attrs.get((el, key), default)
+
+    def test_focus_chain_across_web_area_and_frame(self):
+        self.attrs.update({
+            ("app", "AXFocusedUIElement"): "web",
+            ("web", "AXFocusedUIElement"): "frame",
+            ("frame", "AXFocusedUIElement"): "editor",
+            ("editor", "AXRole"): "AXTextArea",
+        })
+        self.assertEqual(b.focused_input("app"), "editor")
+
+    def test_focused_static_text_resolves_contenteditable_ancestor(self):
+        self.attrs.update({
+            ("app", "AXFocusedUIElement"): "text",
+            ("text", "AXRole"): "AXStaticText",
+            ("text", "AXParent"): "editor",
+            ("editor", "AXRole"): "AXGroup",
+            ("editor", "AXEditable"): True,
+        })
+        self.assertEqual(b.focused_input("app"), "editor")
+
+    def test_window_is_searched_even_when_app_reports_web_container(self):
+        self.attrs.update({
+            ("app", "AXFocusedUIElement"): "web",
+            ("app", "AXFocusedWindow"): "window",
+            ("window", "AXChildren"): ["group"],
+            ("group", "AXChildren"): ["editor"],
+            ("editor", "AXRole"): "AXTextArea",
+            ("editor", "AXFocused"): True,
+        })
+        self.assertEqual(b.focused_input("app"), "editor")
+
+    def test_deeply_nested_web_editor(self):
+        self.attrs[("app", "AXFocusedUIElement")] = "web0"
+        for i in range(15):
+            self.attrs[(f"web{i}", "AXChildren")] = [f"web{i + 1}"]
+        self.attrs[("web15", "AXFocused")] = True
+        self.attrs[("web15", "AXRole")] = "AXTextArea"
+        self.assertEqual(b.focused_input("app"), "web15")
+
+    def test_large_page_does_not_starve_shallow_input(self):
+        self.attrs.update({
+            ("app", "AXFocusedUIElement"): "web",
+            ("web", "AXChildren"): ["editor", "article"],
+            ("article", "AXChildren"): [f"paragraph{i}" for i in range(600)],
+            ("editor", "AXRole"): "AXTextField",
+            ("editor", "AXFocused"): True,
+        })
+        self.assertEqual(b.focused_input("app"), "editor")
+
+    def test_unfocused_input_is_never_used(self):
+        self.attrs.update({
+            ("app", "AXFocusedUIElement"): "web",
+            ("web", "AXChildren"): ["editor"],
+            ("editor", "AXRole"): "AXTextArea",
+        })
+        self.assertIsNone(b.focused_input("app"))
+
+    def test_focus_cycles_are_rejected_and_child_cycles_terminate(self):
+        self.attrs.update({
+            ("a", "AXFocusedUIElement"): "b",
+            ("b", "AXFocusedUIElement"): "a",
+            ("a", "AXRole"): "AXTextArea",
+        })
+        self.assertIsNone(b.focus_owner("a"))
+        self.attrs = {("app", "AXFocusedUIElement"): "web", ("web", "AXChildren"): ["web"]}
+        self.assertIsNone(b.focused_input("app"))
+
+    def test_system_focus_requires_matching_process(self):
+        self.attrs[("system", "AXFocusedUIElement")] = "editor"
+        with (
+            patch.object(b.AX, "AXUIElementCreateSystemWide", return_value="system"),
+            patch.object(b.AX, "AXUIElementGetPid") as get_pid,
+        ):
+            get_pid.side_effect = [(0, 100), (0, 200)]
+            self.assertIsNone(b.system_focus("app"))
+            get_pid.side_effect = [(0, 100), (0, 100)]
+            self.assertEqual(b.system_focus("app"), "editor")
+            get_pid.side_effect = [(1, 100), (0, 100)]
+            self.assertIsNone(b.system_focus("app"))
+
+    def test_custom_editor_requires_writable_selection(self):
+        self.attrs[("editor", "AXRole")] = "AXGroup"
+        self.attrs[("editor", "AXSelectedTextRange")] = "range"
+        self.assertFalse(b.editable("editor"))
+        with patch.object(b.AX, "AXUIElementIsAttributeSettable", return_value=(0, True)):
+            self.assertTrue(b.editable("editor"))
+
+    def test_readonly_disabled_and_explicitly_noneditable_fields_are_rejected(self):
+        for key, value in (("AXReadOnly", True), ("AXEnabled", False), ("AXEditable", False)):
+            with self.subTest(key=key):
+                self.attrs = {("editor", "AXRole"): "AXTextArea", ("editor", key): value}
+                self.assertFalse(b.editable("editor"))
+
+    def test_accessibility_request_does_not_depend_on_app_name(self):
+        with patch.object(b.AX, "AXUIElementSetAttributeValue", return_value=0) as write:
+            b.request_accessibility("app")
+        self.assertEqual([call.args for call in write.call_args_list], [
+            ("app", "AXManualAccessibility", True),
+            ("app", "AXEnhancedUserInterface", True),
+        ])
+
+    def test_unsupported_accessibility_request_still_tries_other_capability(self):
+        with patch.object(
+            b.AX, "AXUIElementSetAttributeValue", side_effect=[RuntimeError(), 0]
+        ) as write:
+            b.request_accessibility("app")
+        self.assertEqual(write.call_count, 2)
+
+    def test_capture_retries_after_accessibility_activation(self):
+        app = Mock()
+        app.processIdentifier.return_value = 123
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value = app
+        self.attrs[("editor", "AXRole")] = "AXTextArea"
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b.AX, "AXUIElementCreateApplication", return_value="app"),
+            patch.object(b, "focused_input", side_effect=[None, "editor"]),
+            patch.object(b, "selection_range", return_value=(0, 0)),
+            patch.object(b, "request_accessibility") as activate,
+            patch.object(b.CF, "CFRunLoopRunInMode"),
+        ):
+            self.assertEqual(b.capture_target()["target"], "editor")
+        activate.assert_called_once_with("app")
+        app.bundleIdentifier.assert_not_called()
+
+    def test_capture_rejects_app_switch_during_resolution(self):
+        kit = MagicMock()
+        first, second = Mock(), Mock()
+        first.processIdentifier.return_value = 123
+        second.processIdentifier.return_value = 456
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.side_effect = [
+            first, first, second,
+        ]
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b.AX, "AXUIElementCreateApplication", return_value="app"),
+            patch.object(b, "focused_input", return_value="editor"),
+        ):
+            with self.assertRaisesRegex(b.BridgeError, "앱이 바뀌었습니다"):
+                b.capture_target()
+
+    def test_selection_missing_malformed_and_not_found_are_rejected(self):
+        self.assertIsNone(b.selection_range("editor"))
+        self.attrs[("editor", "AXSelectedTextRange")] = "raw"
+        with (
+            patch.object(b.AX, "AXValueGetType", return_value=b.AX.kAXValueCFRangeType),
+            patch.object(b.AX, "AXValueGetValue") as get_range,
+        ):
+            for location, length in ((-1, 0), (0, -1), (sys.maxsize, 0)):
+                get_range.return_value = (True, (location, length))
+                self.assertIsNone(b.selection_range("editor"))
+            get_range.return_value = (False, (0, 0))
+            self.assertIsNone(b.selection_range("editor"))
+            get_range.return_value = (True, (2, 3))
+            self.assertEqual(b.selection_range("editor"), (2, 3))
+
+    def test_missing_or_moved_cursor_never_posts_input(self):
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "abc", "range": (1, 0)}
+        self.attrs[("editor", "AXValue")] = "abc"
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "selection_range") as selected,
+            patch.object(b.Q, "CGEventPost") as post,
+        ):
+            for result in (None, (2, 0), (1, 1)):
+                selected.return_value = result
+                with self.assertRaises(b.BridgeError):
+                    b.inject("text", target)
+            selected.return_value = (1, 0)
+            with self.assertRaises(b.BridgeError):
+                b.inject("text", {**target, "range": None})
+            post.assert_not_called()
+
+    def test_capture_requires_readable_cursor(self):
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b.AX, "AXUIElementCreateApplication", return_value="app"),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "selection_range", return_value=None),
+        ):
+            with self.assertRaisesRegex(b.BridgeError, "커서 위치"):
+                b.capture_target()
+
+    def test_unicode_selection_replacement_is_acknowledged(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "A😀B", "range": (1, 2)}
+        snapshots = []
+
+        def unchanged(snapshot):
+            snapshots.append(dict(snapshot))
+            return True
+
+        with (
+            patch.object(b, "target_unchanged", side_effect=unchanged),
+            patch.object(b, "wait_modifiers"),
+            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
+            patch.object(b.Q, "CGEventPost") as post,
+        ):
+            self.assertTrue(b.inject("한😀", target))
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(snapshots[-1]["before"], "A한😀B")
+        self.assertEqual(snapshots[-1]["range"], (4, 0))
+
+    def test_cursor_loss_after_first_chunk_stops_remaining_input(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "", "range": (0, 0)}
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b, "target_unchanged", side_effect=[True, True, True, False]),
+            patch.object(b, "wait_modifiers"),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "selection_range", return_value=None),
+            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
+            patch.object(b.Q, "CGEventPost") as post,
+        ):
+            with self.assertRaisesRegex(b.BridgeError, "커서 위치"):
+                b.inject("x" * 32, target)
+        self.assertEqual(post.call_count, 2)

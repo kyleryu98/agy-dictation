@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 import ApplicationServices as AX
 import AppKit as AK
 import Quartz as Q
@@ -62,6 +63,28 @@ def same(a, b):
 def value(el):
     v = attr(el, "AXValue")
     return str(v) if isinstance(v, str) else None
+
+
+def selection_range(el):
+    """Return a verified UTF-16 selection, never treat missing AX data as a caret."""
+    raw = attr(el, "AXSelectedTextRange")
+    if raw is None:
+        return None
+    try:
+        if AX.AXValueGetType(raw) != AX.kAXValueCFRangeType:
+            return None
+        ok, selected = AX.AXValueGetValue(raw, AX.kAXValueCFRangeType, None)
+        if not ok:
+            return None
+        location, length = selected
+        if (
+            not isinstance(location, int) or not isinstance(length, int)
+            or location < 0 or length < 0 or location + length >= sys.maxsize
+        ):
+            return None
+        return location, length
+    except Exception:
+        return None
 
 
 def status(kind, detail=""):
@@ -171,34 +194,114 @@ class CLI:
 
 
 def editable(el):
+    if el is None or attr(el, "AXEnabled", True) is False or attr(el, "AXReadOnly", False):
+        return False
     role = attr(el, "AXRole", "")
-    return role in ("AXTextArea", "AXTextField", "AXComboBox") or bool(
-        attr(el, "AXEditable", False)
-    )
+    explicit = attr(el, "AXEditable")
+    if explicit is not None:
+        return bool(explicit)
+    if role in ("AXTextArea", "AXTextField", "AXComboBox"):
+        return True
+    # Custom editors can expose selection insertion without a standard text role.
+    # A readable AXValue/selection alone also occurs on non-editable page text.
+    try:
+        err, writable = AX.AXUIElementIsAttributeSettable(el, "AXSelectedText", None)
+        return err == 0 and bool(writable)
+    except Exception:
+        return False
+
+
+def focus_owner(node):
+    """Resolve an explicitly focused object, including its editable text ancestor."""
+    seen = []
+    for _ in range(24):
+        if node is None or any(same(node, previous) for previous in seen):
+            return None
+        seen.append(node)
+        child = attr(node, "AXFocusedUIElement")
+        if child is None or same(child, node):
+            break
+        node = child
+    else:
+        return None
+    # Web editors sometimes focus a static-text leaf inside a contenteditable.
+    # Only walk ancestors of an explicit focus, never a random text descendant.
+    for _ in range(24):
+        if node is None or attr(node, "AXRole", "") in ("AXWindow", "AXApplication"):
+            return None
+        if attr(node, "AXEnabled", True) is False or attr(node, "AXReadOnly", False):
+            return None
+        if editable(node):
+            return node
+        parent = attr(node, "AXParent")
+        if parent is None or same(parent, node):
+            return None
+        node = parent
+    return None
+
+
+def system_focus(root):
+    """Use system focus only when it belongs to the captured application."""
+    try:
+        node = attr(AX.AXUIElementCreateSystemWide(), "AXFocusedUIElement")
+        if node is None:
+            return None
+        root_err, root_pid = AX.AXUIElementGetPid(root, None)
+        node_err, node_pid = AX.AXUIElementGetPid(node, None)
+        if root_err == node_err == 0 and root_pid == node_pid:
+            return node
+    except Exception:
+        pass
+    return None
 
 
 def focused_input(root):
     direct = attr(root, "AXFocusedUIElement")
-    if direct is not None and editable(direct):
-        return direct
     window = attr(root, "AXFocusedWindow")
     nested = attr(window, "AXFocusedUIElement")
-    if nested is not None and editable(nested):
-        return nested
-    # WebView applications may report only the containing web area at app level.
-    # Accept only an explicitly focused editable descendant, never an arbitrary field.
-    stack = [(direct if direct is not None else window, 0)]
-    visited = 0
-    while stack and visited < 180:
-        node, depth = stack.pop()
-        visited += 1
+    for node in (direct, nested):
+        owner = focus_owner(node)
+        if owner is not None:
+            return owner
+    global_focus = system_focus(root)
+    owner = focus_owner(global_focus)
+    if owner is not None:
+        return owner
+    # Search all focus roots, including the window when app focus is a web area.
+    # Breadth-first traversal avoids spending the entire budget on one page branch.
+    pending = deque((node, 0) for node in (direct, nested, global_focus, window))
+    seen = set()
+    deadline = time.monotonic() + 0.25
+    while pending and len(seen) < 512 and time.monotonic() < deadline:
+        node, depth = pending.popleft()
         if node is None:
             continue
-        if editable(node) and attr(node, "AXFocused", False):
-            return node
-        if depth < 9:
-            stack.extend((child, depth + 1) for child in attr(node, "AXChildren", []))
+        # PyObjC CF wrappers are hashable and compare by the underlying CF value.
+        if node in seen:
+            continue
+        seen.add(node)
+        focused = attr(node, "AXFocusedUIElement")
+        candidate = focused if focused is not None else (
+            node if attr(node, "AXFocused", False) else None
+        )
+        owner = focus_owner(candidate)
+        if owner is not None:
+            return owner
+        if depth < 32:
+            pending.extend((child, depth + 1) for child in attr(node, "AXChildren", []))
     return None
+
+
+def request_accessibility(root):
+    """Ask the target to expose its AX tree; never grant TCC or activate its window."""
+    # Chromium uses EnhancedUserInterface; Electron also supports ManualAccessibility.
+    # Try capabilities on any app instead of maintaining a bundle-ID allowlist.
+    for name in ("AXManualAccessibility", "AXEnhancedUserInterface"):
+        try:
+            result = AX.AXUIElementSetAttributeValue(root, name, True)
+        except Exception:
+            result = "unsupported"
+        logging.info("accessibility tree request attribute=%s result=%s", name, result)
 
 
 def capture_target():
@@ -206,7 +309,7 @@ def capture_target():
     pid = app.processIdentifier()
     root = AX.AXUIElementCreateApplication(pid)
     el = None
-    end = time.monotonic() + 0.8
+    end = time.monotonic() + 2.0
     attempts = 0
     while time.monotonic() < end:
         if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
@@ -215,19 +318,25 @@ def capture_target():
         attempts += 1
         if el is not None:
             break
-        if attempts == 1 and app.bundleIdentifier() == "com.anthropic.claudefordesktop":
-            # Enable Claude/Electron's accessibility tree on demand, not a TCC grant.
-            result = AX.AXUIElementSetAttributeValue(root, "AXManualAccessibility", True)
-            logging.info("Claude accessibility tree requested result=%s", result)
+        if attempts == 1:
+            request_accessibility(root)
         if threading.current_thread() is threading.main_thread():
             CF.CFRunLoopRunInMode(CF.kCFRunLoopDefaultMode, 0.08, False)
         else:
             time.sleep(0.08)
     if el is None:
         logging.info("focused input unavailable attempts=%s", attempts)
-        raise BridgeError("입력칸을 클릭한 뒤 다시 눌러 주세요.")
+        raise BridgeError("앱에서 입력 위치를 확인할 수 없어요. 입력칸에 커서를 놓고 다시 눌러 주세요.")
+    if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
+        raise BridgeError("앱이 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
     if "Secure" in attr(el, "AXSubrole", ""):
         raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
+    selected = selection_range(el)
+    before = value(el)
+    if selected is None or (
+        before is not None and sum(selected) > len(before.encode("utf-16-le")) // 2
+    ):
+        raise BridgeError("커서 위치를 확인할 수 없어 자동 입력을 중단했습니다.")
     logging.info(
         "target captured role=%s attempts=%s",
         attr(el, "AXRole", ""),
@@ -237,18 +346,19 @@ def capture_target():
         "pid": pid,
         "root": root,
         "target": el,
-        "before": value(el),
-        "range": attr(el, "AXSelectedTextRange"),
+        "before": before,
+        "range": selected,
     }
 
 
 def target_unchanged(s):
     front = AK.NSWorkspace.sharedWorkspace().frontmostApplication()
     return (
-        front.processIdentifier() == s["pid"]
+        s.get("range") is not None
+        and front.processIdentifier() == s["pid"]
         and same(focused_input(s["root"]), s["target"])
         and (s["before"] is None or value(s["target"]) == s["before"])
-        and (s["range"] is None or same(attr(s["target"], "AXSelectedTextRange"), s["range"]))
+        and selection_range(s["target"]) == s["range"]
     )
 
 
@@ -276,32 +386,54 @@ def inject(text, s):
     # Unicode keyboard text insertion: no clipboard, Cmd+V, app activation or Return key.
     if not text.strip():
         raise BridgeError("인식된 음성이 없습니다.")
+    current = dict(s)
     for start in range(0, len(text), 16):
         if cancel_requested.is_set():
             raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
-        if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != s[
-            "pid"
-        ] or not same(focused_input(s["root"]), s["target"]):
-            raise BridgeError("입력 도중 포커스가 바뀌었습니다. 전사문을 파일로 보관했습니다.")
+        if not target_unchanged(current):
+            raise BridgeError("입력 도중 커서나 내용이 바뀌어 중단했습니다. 전사문을 파일로 보관했습니다.")
         if Q.CGEventSourceFlagsState(Q.kCGEventSourceStateCombinedSessionState) & (CTRL | OTHER):
             raise BridgeError("입력 도중 보조 키가 눌려 중단했습니다.")
         if "Secure" in attr(s["target"], "AXSubrole", ""):
             raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
         chunk = text[start : start + 16]
+        encoded = chunk.encode("utf-16-le")
+        location, length = current["range"]
+        expected_range = (location + len(encoded) // 2, 0)
+        expected_value = None
+        if current["before"] is not None:
+            original = current["before"].encode("utf-16-le")
+            try:
+                expected_value = (
+                    original[:location * 2] + encoded + original[(location + length) * 2:]
+                ).decode("utf-16-le")
+            except UnicodeDecodeError:
+                raise BridgeError("커서 위치를 확인할 수 없어 자동 입력을 중단했습니다.") from None
         for down in (True, False):
             event = Q.CGEventCreateKeyboardEvent(None, 0, down)
             Q.CGEventSetFlags(event, 0)
-            Q.CGEventKeyboardSetUnicodeString(event, len(chunk.encode("utf-16-le")) // 2, chunk)
+            Q.CGEventKeyboardSetUnicodeString(event, len(encoded) // 2, chunk)
             Q.CGEventPost(Q.kCGHIDEventTap, event)
-        time.sleep(0.012)
-    if s["before"] is not None:
-        end = time.monotonic() + 2
+        # Wait for acknowledgement before sending another chunk. Never keep typing
+        # after a same-field cursor move, inaccessible selection or rejected event.
+        confirmed = {**current, "range": expected_range, "before": expected_value}
+        end = time.monotonic() + 0.8
         while time.monotonic() < end:
-            now = value(s["target"])
-            if now != s["before"] and text in (now or ""):
-                return True
-            time.sleep(0.05)
-    return False
+            if cancel_requested.is_set():
+                raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
+            if target_unchanged(confirmed):
+                current = confirmed
+                break
+            if (
+                AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier()
+                != s["pid"] or not same(focused_input(s["root"]), s["target"])
+                or selection_range(s["target"]) not in (current["range"], expected_range)
+            ):
+                raise BridgeError("입력 도중 커서 위치를 확인할 수 없어 중단했습니다.")
+            time.sleep(0.02)
+        else:
+            raise BridgeError("입력 결과를 확인할 수 없어 중단했습니다. 전사문을 파일로 보관했습니다.")
+    return current["before"] is not None
 
 
 def save_recovery(text):

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import zipfile
@@ -22,7 +23,17 @@ PATTERNS = {
     "google_api_key": re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
     "github_token": re.compile(r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,})"),
     "api_secret": re.compile(r"\bsk-[A-Za-z0-9_-]{24,}"),
+    "google_oauth_token": re.compile(r"\bya29\.[A-Za-z0-9_-]{20,}"),
+    "aws_access_key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    "slack_token": re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}"),
+    "bearer_credential": re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/-]{16,}=*"),
+    "jwt_credential": re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    "credential_url": re.compile(r"[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@", re.I),
 }
+SECRET_ASSIGNMENT = re.compile(
+    r'''(?ix)["']?\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|'''
+    r'''password|passwd|secret|token)["']?\s*[:=]\s*["']([^"'\r\n]{8,})["']'''
+)
 RUNTIME_NAMES = {
     "auth.json",
     "installation.json",
@@ -34,7 +45,22 @@ RUNTIME_NAMES = {
     "status.json",
     "hud-status.json",
 }
-BINARY_SUFFIXES = {".wav", ".mp3", ".aiff", ".webm", ".mp4", ".dmg", ".app", ".pem", ".key", ".pyc"}
+BINARY_SUFFIXES = {
+    ".wav", ".mp3", ".aif", ".aiff", ".m4a", ".aac", ".caf", ".flac", ".ogg", ".opus",
+    ".webm", ".mp4", ".m4v", ".dmg", ".app", ".pem", ".key", ".p12", ".pfx", ".pyc",
+    ".db", ".sqlite", ".sqlite3", ".zip", ".tar", ".gz", ".7z",
+}
+PRIVATE_DIRECTORIES = {
+    "runtime", "logs", "voice-session", "recordings", "transcripts", "backups", ".ssh", ".aws",
+    ".venv", "venv", ".git", "work", "security-audit",
+}
+
+
+def placeholder(value):
+    return (
+        value.lower() in {"changeme", "change-me", "replace-me", "example", "placeholder"}
+        or re.fullmatch(r"\$\{[A-Z0-9_]+\}|<[A-Za-z0-9_ -]+>|YOUR_[A-Z0-9_]+", value) is not None
+    )
 
 
 def public_commit_email(email, domains=()):
@@ -63,7 +89,10 @@ def scan_bytes(data, label, markers=(), public_commit_domains=()):
         return [{"path": label, "kind": "oversize_unscanned"}]
     if b"\0" in data:
         return [{"path": label, "kind": "binary_requires_review"}]
-    text = data.decode("utf-8", errors="replace")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return [{"path": label, "kind": "undecodable_requires_review"}]
     for number, line in enumerate(text.splitlines(), 1):
         for kind, pattern in PATTERNS.items():
             matches = list(pattern.finditer(line))
@@ -73,22 +102,31 @@ def scan_bytes(data, label, markers=(), public_commit_domains=()):
                 ]
             if matches:
                 issues.append({"path": label, "line": number, "kind": kind})
+        if any(
+            not placeholder(match[2])
+            and (len(match[2]) >= 16 or match[1].lower() in {"password", "passwd"})
+            for match in SECRET_ASSIGNMENT.finditer(line)
+        ):
+            issues.append({"path": label, "line": number, "kind": "literal_credential"})
         if any(marker.casefold() in line.casefold() for marker in markers):
             issues.append({"path": label, "line": number, "kind": "personal_marker"})
     return issues
 
 
 def scan_name(name):
-    p = Path(name)
+    p = Path(name.replace("\\", "/").casefold())
+    if any(part in PRIVATE_DIRECTORIES or part.endswith(".app") for part in p.parts):
+        return [{"path": name, "kind": "private_directory"}]
     if (
         p.name in RUNTIME_NAMES
+        or re.match(r"(?:auth|credentials|transcript|last-transcript|engine-auth)(?:[._-]|$)", p.name)
         or p.suffix.lower() in BINARY_SUFFIXES
         or p.suffix.lower() in {".log", ".sock", ".pid", ".lock"}
     ):
         return [{"path": name, "kind": "runtime_or_private_artifact"}]
     if p.name == ".env" or (p.name.startswith(".env.") and p.name != ".env.example"):
         return [{"path": name, "kind": "environment_file"}]
-    if p.name in {"INSTALL.txt", "runtime.json"}:
+    if p.name in {"install.txt", "runtime.json", "do_not_publish.txt"}:
         return [{"path": name, "kind": "local_build_metadata"}]
     return []
 
@@ -138,14 +176,33 @@ def scan_repo(root, markers=(), check_identity=False):
     for entry in filter(None, git(root, "ls-files", "--stage", "-z").decode().split("\0")):
         meta, name = entry.split("\t", 1)
         mode, oid, _ = meta.split()
-        if mode == "160000":
+        issues.extend({**issue, "path": "index:" + name} for issue in scan_name(name))
+        if mode == "120000":
+            issues.append({"path": "index:" + name, "kind": "symlink_requires_review"})
+        elif mode == "160000":
             issues.append({"path": name, "kind": "submodule_requires_review"})
         else:
             blob(oid, "index:" + name)
-    objects = git(root, "rev-list", "--objects", "--all").decode().splitlines()
-    for item in objects:
+    # A blob may have many names. Inspect every distinct tree, not just the single
+    # name rev-list --objects happens to report for a reused blob.
+    seen_paths = set()
+    for tree in set(git(root, "log", "--all", "--format=%T").decode().splitlines()):
+        for entry in filter(None, git(root, "ls-tree", "-r", "-z", tree).decode().split("\0")):
+            meta, name = entry.split("\t", 1)
+            mode, kind, oid = meta.split()
+            label = "history:" + name
+            if (mode, name) not in seen_paths:
+                seen_paths.add((mode, name))
+                issues.extend({**issue, "path": label} for issue in scan_name(name))
+                if mode in {"120000", "160000"}:
+                    issues.append({"path": label, "kind": "historical_link_requires_review"})
+            if kind == "blob":
+                blob(oid, label)
+    # Retain coverage for tags pointing directly to blobs/trees rather than commits.
+    for item in git(root, "rev-list", "--objects", "--all").decode().splitlines():
         oid, _, name = item.partition(" ")
-        if git(root, "cat-file", "-t", oid).strip() == b"blob":
+        if oid not in seen_blobs and git(root, "cat-file", "-t", oid).strip() == b"blob":
+            issues.extend({**issue, "path": "history:" + name} for issue in scan_name(name))
             blob(oid, "history:" + name)
     metadata = git(root, "log", "--all", "--format=%H%n%an%n%ae%n%cn%n%ce%n%B")
     issues.extend(scan_bytes(metadata, "history:commit-metadata", markers, public_domains))
@@ -198,6 +255,9 @@ def scan_archive(path, markers=()):
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
                 if info.is_dir():
+                    continue
+                if stat.S_ISLNK(info.external_attr >> 16):
+                    issues.append({"path": info.filename, "kind": "symlink_requires_review"})
                     continue
                 if info.file_size > LIMIT:
                     issues.append({"path": info.filename, "kind": "oversize_unscanned"})

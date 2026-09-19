@@ -58,3 +58,35 @@ Set the approved work email domain or your own GitHub no-reply address in **this
 - The design assumes a trusted user account and configured parent directories. It does not isolate the app from malware with the same user's privileges or from an administrator/root user.
 - Final input events and simultaneous user actions cannot be made fully atomic. Some input fields or apps may fail conservatively.
 - Transcription uses the official AGY CLI's cloud feature. This repository does not control Google's data processing or retention of the CLI's own logs and temporary files.
+
+## 2026-09-19 follow-up hardening
+
+- Privacy checks now cover additional provider tokens, bearer/JWT credentials,
+  credential URLs and literal credentials. Common explicit placeholders are allowed;
+  arbitrary secrets and transcript contents still cannot be detected exhaustively.
+- Runtime names, audio formats, private directories, unreadable encodings, historical
+  symlinks and deleted historical filenames are checked. Every distinct Git tree is
+  inspected, including multiple filenames that reuse the same blob. Findings never
+  include the matching contents.
+- Local guards run before commits and pushes. CI also scans wheel/sdist contents
+  after building. Existing unrelated hooks are not overwritten.
+- Missing, malformed or changed cursor selections now stop insertion. Each input
+  chunk must be acknowledged at the expected UTF-16 cursor and, when readable, with
+  the expected text before the next chunk is sent. A failure after accepted input
+  can leave a partial result; the service does not blindly roll back user text.
+- Dependabot alerts and security updates were enabled and read back through GitHub's
+  API. Secret scanning and push protection were already enabled. The runtime snapshot
+  in `requirements.txt` makes resolved versions visible to the dependency graph;
+  CI installs that snapshot and Dependabot checks pip/Actions weekly. No automatic
+  merging is configured. Notification delivery follows the user's GitHub preferences.
+- The repository/history and built wheel/sdist privacy scans found no matches.
+  `pip-audit` reported no known vulnerabilities in the pinned runtime dependencies.
+  These are current check results, not a guarantee that every possible secret or
+  future vulnerability is covered.
+- With explicit user approval, the installed personal service received the input
+  functions and input-validation helper from this repository. Original files were
+  backed up privately; the service restarted into `idle`. Its existing provider,
+  engine, login and permission setup were retained. This was an input update, not
+  migration of the complete legacy service to the new authenticated IPC architecture.
+  The user subsequently reported successful Chrome voice insertion with the existing
+  shortcut. Other app/input cases and clean-Mac installation remain unverified.

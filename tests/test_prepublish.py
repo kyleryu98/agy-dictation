@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -114,3 +115,90 @@ class PrivacyGateTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 audit.commit_email_domains(root)
+
+    def test_more_credentials_are_detected_without_echoing_values(self):
+        samples = [
+            "ya" + "29." + "x" * 40,
+            "AK" + "IA" + "A" * 16,
+            "xox" + "b-" + "1" * 30,
+            "Bearer " + "y" * 32,
+            "ey" + "J" + "x" * 20 + "." + "y" * 20 + "." + "z" * 20,
+            "https://" + "user:" + "private-value" + "@example.invalid",
+            'password' + ' = "' + 'not-a-real-password' + '"',
+        ]
+        for sample in samples:
+            with self.subTest(kind=sample[:3]):
+                result = audit.scan_bytes(sample.encode(), "fixture")
+                self.assertTrue(result)
+                self.assertNotIn(sample, json.dumps(result))
+
+    def test_documented_placeholders_are_allowed(self):
+        for value in ("YOUR_API_KEY", "${API_KEY}", "<your token>", "replace-me"):
+            sample = 'api_key' + ' = "' + value + '"'
+            self.assertFalse(audit.scan_bytes(sample.encode(), "fixture"))
+
+    def test_runtime_names_and_audio_formats_are_blocked(self):
+        for name in (
+            "AUDIO.M4A", "clip.caf", "recordings/note.txt", "TRANSCRIPT-2026.txt",
+            "auth.backup.json", "credentials.old.json", "backups/session.txt",
+            "test.app/Contents/script.py", "DO_NOT_PUBLISH.txt", "capture.sqlite",
+        ):
+            self.assertTrue(audit.scan_name(name), name)
+        for name in ("tests/test_export.py", "docs/testing.md", "src/agy_dictation/export_prompt.py"):
+            self.assertFalse(audit.scan_name(name), name)
+
+    def test_non_utf8_content_is_not_silently_skipped(self):
+        self.assertEqual(audit.scan_bytes(b"\xff\xfe", "fixture")[0]["kind"],
+                         "undecodable_requires_review")
+
+    def test_deleted_historical_runtime_name_is_detected_even_for_reused_blob(self):
+        executable = os.environ.get("AGY_AUDIT_GIT") or audit.shutil.which("git")
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+
+            def git(*args):
+                return subprocess.run(
+                    [executable, "-C", name, *args], capture_output=True, check=True
+                )
+
+            git("init")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture" + chr(64) + "users.noreply.github.com")
+            (root / "safe.txt").write_text("synthetic sample")
+            git("add", ".")
+            git("commit", "-m", "safe")
+            (root / "transcript-old.txt").write_text("synthetic sample")
+            git("add", ".")
+            git("commit", "-m", "fixture")
+            git("rm", "transcript-old.txt")
+            git("commit", "-m", "remove fixture")
+            with patch.dict(os.environ, {"AGY_AUDIT_GIT": executable}):
+                report = audit.scan_repo(root)
+            self.assertTrue(any(x["path"] == "history:transcript-old.txt" for x in report["findings"]))
+
+    def test_guard_installs_both_hooks_and_preserves_unrelated_hooks(self):
+        spec = importlib.util.spec_from_file_location("guard", ROOT / "scripts/install_git_guard.py")
+        guard = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"prepublish_check": audit}):
+            spec.loader.exec_module(guard)
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            hooks = root / "hooks"
+            hooks.mkdir()
+
+            def git(root, *args, **kwargs):
+                return b"" if args[0] == "config" else args[-1].encode()
+
+            with patch.object(guard, "ROOT", root), patch.object(guard, "git", side_effect=git):
+                self.assertEqual(guard.main([]), 0)
+                self.assertEqual(list(hooks.iterdir()), [])
+                (hooks / "pre-push").write_text("unrelated hook")
+                with self.assertRaises(SystemExit):
+                    guard.main(["--apply"])
+                self.assertFalse((hooks / "pre-commit").exists())
+                self.assertEqual((hooks / "pre-push").read_text(), "unrelated hook")
+                (hooks / "pre-push").unlink()
+                self.assertEqual(guard.main(["--apply"]), 0)
+                for hook in hooks.iterdir():
+                    self.assertIn("--check-identity", hook.read_text())
+                    self.assertEqual(hook.stat().st_mode & 0o777, 0o700)

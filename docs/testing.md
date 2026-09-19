@@ -42,6 +42,29 @@ Run this procedure once the rebuilt version's installation and startup procedure
 
 This is guidance for future testing. Running the build script does not perform these manual tests.
 
+### macOS input compatibility matrix
+
+Repeat the insertion, selection-preservation, cancellation and focus-change cases for
+each row. These rows are acceptance targets, not claims of verified compatibility.
+
+| Target | Input cases | Current repository evidence |
+| --- | --- | --- |
+| TextEdit | Plain and rich text, cursor in existing text | Synthetic focus tests only |
+| Chrome | HTML input/textarea, contenteditable, nested iframe, long page | User reported one successful voice insertion; broader matrix unverified |
+| Aside Browser | HTML input/textarea, contenteditable, nested iframe, long page | Synthetic focus tests only |
+| Safari and Firefox | HTML input/textarea and contenteditable | Not tested in these browsers |
+| Codex, Claude and Signal | Electron/webview composer, cold app start | Synthetic focus tests only |
+| Custom editors | Editable group or writable selected-text capability | Synthetic capability tests only |
+| Non-input surfaces | Page body, read-only/disabled fields, password fields | Must refuse unsafe insertion |
+
+For browsers, test both a fresh launch before any accessibility inspector is used and
+an already-running session. The service now requests accessibility-tree activation
+on demand for any application, follows nested focus references and editable ancestors,
+and searches the focused window as well as the app's reported focus. A system-wide
+focus result is accepted only when its process matches the target application.
+Search remains bounded; an application that exposes no identifiable editable focus
+will still be rejected. Do not replace this check with blind typing or clipboard paste.
+
 ## Recording results
 
 Record the macOS, Python, and AGY CLI versions; repository revision or source-snapshot identifier; account plan type without the email address; target app; test case; pass, fail, or untested status; and observed latency. Keep the original implementation's results separate from the rebuilt version's results, unit tests separate from real voice input, and local bundle checks separate from execution on a clean Mac. Leave the exact Gemini Audio model version marked as unconfirmed.
@@ -66,3 +89,38 @@ Record the macOS, Python, and AGY CLI versions; repository revision or source-sn
 - The generated app bundle passed ad-hoc signature checks, and the actual launcher passed `engine_bootstrap.py --check`. This check only loads modules; it does not start microphone, UI, or login operations.
 - Regression coverage includes cancellation debounce, cancellation during startup, propagation of setup error codes, and handling shutdown requests before microphone access is approved.
 - Full installation, automatic startup, and text insertion on a clean Mac, with user approval and real speech, remain unverified. The separate installation currently in use was not changed.
+
+## 2026-09-19 browser focus regression checks
+
+- 113 automated tests and Ruff passed. The Git-dependent test used the bundled Git
+  executable because the system Git is blocked by the unaccepted Xcode license.
+- New tests cover nested focus chains, focused text inside contenteditable, focused
+  window fallback, deep/large web trees, writable custom editors, accessibility
+  activation retry, process ownership, app switches, cycles and unfocused/read-only
+  fields. All native frameworks are mocked; no microphone, real typing, permissions
+  or login operations occur in these tests.
+- The existing installed service was inspected read-only. Its logs show input-target
+  capture failures in Chrome and Aside alongside successful captures in desktop apps.
+  This identifies the failing stage, but does not prove which browser AX condition
+  caused each failure. These initial checks did not include live browser dictation.
+
+## 2026-09-19 approved input update and security checks
+
+- The installed personal service was backed up and updated with the repository's
+  input functions and input-validation helper after explicit authorization. Function
+  ASTs and helper bytes were compared with the source. The service restarted into
+  `idle`; microphone, real typing, permission and login operations were not automated.
+- Native AXValue construction confirmed that PyObjC returns CFRange as a tuple;
+  selection decoding and synthetic tests use the same representation.
+- Cursor tests cover missing/malformed selection, a moved cursor in the same field,
+  selected-text replacement with emoji using UTF-16 offsets, and stopping remaining
+  chunks when cursor acknowledgement is lost.
+- Privacy checks cover deleted historical runtime names sharing a blob with a safe
+  filename, additional credentials, private file types and non-UTF-8 input.
+- Repository/history and built wheel/sdist scans passed; pinned runtime dependency
+  auditing found no known vulnerabilities. The final suite passed 124 tests and Ruff.
+- After the installed input update, the user reported successful voice insertion in
+  a Chrome input field using the existing shortcut. This is a user-reported manual
+  success, not an automated observation. The site, field type, selection handling
+  and failure cases were not independently verified. Aside and the rest of the full
+  compatibility matrix still require manual validation.
