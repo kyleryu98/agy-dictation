@@ -1,28 +1,28 @@
-# 개인정보와 인증 경계
+# Privacy and authentication boundaries
 
-로그인과 자격 증명 관리는 사용자의 공식 AGY CLI에 속합니다. 이 프로젝트 문서나 저장소에 계정 이메일, 인증 파일, 토큰, 실제 전사문, 음성 파일 또는 실행 로그를 포함하지 마세요. 문제 보고에는 실제 발화 대신 합성 예문과 민감정보를 제거한 환경 정보만 사용합니다.
+The user's official AGY CLI handles login and credentials. Do not include account emails, authentication files, tokens, real transcripts, audio files, or runtime logs in this project's documentation or repository. Issue reports should use synthetic examples instead of actual speech, along with environment details stripped of sensitive information.
 
-## 데이터 흐름
+## Data flow
 
-음성은 공식 CLI의 음성 기능을 통해 처리되며 전사 결과는 외부 편집기 콜백과 래퍼를 거쳐 입력 대상 앱으로 전달됩니다. 온디바이스 전사 또는 오프라인 전용 처리라고 주장하지 않습니다. 공식 서비스의 전송·보관·학습 정책은 사용자의 계정에 적용되는 Google 정책을 따르며, 이 래퍼가 이를 변경하거나 데이터 삭제를 보증하지 않습니다.
+Audio is processed through the official CLI's voice feature. The transcript passes through an external-editor callback and the wrapper to the target app. This project does not claim on-device transcription or offline-only processing. The official service's transmission, retention, and training policies are governed by the Google policies applicable to the user's account. This wrapper does not change those policies or guarantee data deletion.
 
-클립보드를 사용하지 않는 구조는 클립보드에 전사문을 남기는 경로를 피합니다. 이것이 메모리, 임시 파일, CLI 내부 기록 또는 대상 앱의 문서·자동 저장에 흔적이 없다는 뜻은 아닙니다. 외부 편집기 콜백의 임시 데이터 위치와 삭제 시점, 오류·강제 종료 때의 잔존 여부는 구현과 실제 동작을 확인해야 합니다. 저장소 재구성판의 파일·응답 보관 경계는 단위 테스트와 코드 검토를 수행했습니다. 실제 CLI 자체의 보관 정책과 새 Mac 종단 간 검증은 별개입니다. [보안 점검 결과](security-audit.md)를 참고하세요.
+Avoiding the clipboard removes one path that could leave a transcript there. It does not mean that no traces remain in memory, temporary files, internal CLI records, or the target app's documents and autosaves. Check the implementation and actual behavior for callback temporary-data locations, deletion timing, and leftovers after errors or forced termination. The rebuilt repository's file and response retention boundaries have undergone unit tests and code review. The CLI's own retention policies and clean-Mac end-to-end validation are separate matters. See the [security audit](security-audit.md).
 
-## 현재 소스의 로컬 보관 동작
+## Local retention in the current source
 
-기본 데이터 폴더는 `~/Library/Application Support/ProListenDictation`이며 `AGY_DICTATION_DATA_DIR`로 바꿀 수 있습니다. 외부 편집기 콜백은 `transcript.json`으로 전사 결과를 전달합니다. 서비스는 삽입 전에 `last-transcript.txt`를 쓰고, 대상 앱에서 입력 결과가 확인된 경우 삭제합니다. 삽입 실패나 결과 확인 불가 시 복구 파일에 전사문이 남을 수 있으므로 불필요해지면 사용자가 삭제해야 합니다. 파일 권한 0600과 디렉터리 권한 0700을 확인하고, 소유자·타입·링크를 검사합니다. 녹음 세션과 단회 요청 식별자가 맞는 결과만 수락하고 취소·오류 시 교환 파일을 정리합니다. 강제 종료·전원 차단에 따른 모든 잔존 데이터 제거를 보장하지 않습니다.
+The default data directory is `~/Library/Application Support/ProListenDictation`; it can be changed with `AGY_DICTATION_DATA_DIR`. The external-editor callback delivers the transcript in `transcript.json`. Before insertion, the service writes `last-transcript.txt` and deletes it when the insertion result is confirmed in the target app. If insertion fails or cannot be verified, the transcript may remain in the recovery file; the user should delete it when it is no longer needed. The implementation checks file permissions of 0600, directory permissions of 0700, ownership, types, and links. It accepts only results with matching recording-session and single-use request identifiers, and cleans up exchange files on cancellation or error. It does not guarantee removal of all residual data after forced termination or power loss.
 
-이 파일들은 로컬 실행 데이터이며 저장소·이슈·배포 파일에 포함하면 안 됩니다. 기본 로그 위치는 `~/Library/Logs/ProListenDictation`입니다. 로그를 공개하거나 원문을 첨부하지 마세요. 래퍼 로그에는 전사문과 예외 원문을 남기지 않도록 처리했습니다. 상태 코드와 예외 타입은 남습니다. 공식 CLI 자체 로그는 별도이며 원문을 공개하지 마세요.
+These files are local runtime data and must not be included in the repository, issues, or distribution artifacts. The default log location is `~/Library/Logs/ProListenDictation`. Do not publish logs or attach their raw contents. The wrapper is designed to omit transcripts and raw exception messages from logs; status codes and exception types remain. The official CLI's own logs are separate and should not be published in raw form either.
 
-## 사용자 동의와 권한
+## User consent and permissions
 
-본인이 터미널에서 `agy`를 실행해 로그인과 초기 설정을 완료합니다. CLI가 요청하는 추가 동의나 작업 폴더 신뢰는 사용자가 직접 판단합니다. macOS 마이크 접근 및 전역 입력·네이티브 삽입에 필요한 권한도 해당 실행 주체를 확인한 후 직접 허용해야 합니다. 자동 승인, 권한 우회 또는 자동 신뢰 설정을 제공한다고 설명하지 않습니다.
+Run `agy` yourself in a terminal to complete login and initial setup. Decide personally whether to approve any additional consent or working-directory trust requested by the CLI. Before granting macOS microphone access or permissions needed for global input and native insertion, verify which executable is requesting them. Do not describe this tool as providing automatic approval, permission bypasses, or automatic trust configuration.
 
-## 공개 전 확인
+## Checks before publication
 
-- 문서, 소스 예제, 패키징 메타데이터에 개인 홈 경로나 계정 식별자가 없는지 확인합니다.
-- 인증 데이터, 토큰, 전사문, 음성 및 로그가 배포 파일과 Git 이력에 없는지 확인합니다.
-- 콜백 임시 파일의 접근 권한과 정리 동작을 정상 종료·취소·오류 각각에서 확인합니다.
-- 취소 후 지연 결과가 다른 앱이나 새 입력 위치에 삽입되지 않는지 확인합니다.
+- Check documentation, source examples, and packaging metadata for personal home paths and account identifiers.
+- Check distribution artifacts and Git history for authentication data, tokens, transcripts, audio, and logs.
+- Verify callback temporary-file permissions and cleanup after normal completion, cancellation, and errors.
+- Verify that delayed results after cancellation are not inserted into another app or a new input position.
 
-이 문서는 설계 경계와 검증 요구사항이며 독립적인 개인정보 보호 인증은 아닙니다.
+This document describes design boundaries and validation requirements. It is not an independent privacy certification.

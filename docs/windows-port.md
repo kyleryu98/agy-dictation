@@ -1,21 +1,21 @@
-# Windows 이식 범위
+# Scope of a Windows port
 
-**Windows 구현은 없습니다.** 공식 AGY CLI의 Windows 지원 여부와 이 래퍼의 Windows 지원 여부는 별개입니다. 현재 Python 백엔드는 `pty`와 `fcntl`에 의존하는 Unix 전용 구조이므로 AppKit UI만 바꾸어 실행할 수 없습니다.
+**Windows is not implemented.** Windows support in the official AGY CLI is separate from Windows support in this wrapper. The current Python backend is Unix-only and depends on `pty` and `fcntl`; replacing the AppKit UI alone is not enough.
 
-## 필요한 작업
+## Required work
 
-| 영역 | 이식·검증할 내용 |
+| Area | Work to port and validate |
 | --- | --- |
-| CLI 전송 | Unix PTY·`fcntl` 및 로컬 Unix 소켓 통신을 대체하거나 지원을 검증할 Windows 대화형 콘솔 전송 구현; ConPTY 등 후보의 입출력·종료·취소 검증 |
-| 외부 편집기 콜백 | Windows 경로 인용, 인코딩, 프로세스 호출, 임시 데이터와 세션 구분 |
-| HUD | AppKit을 대신할 비활성 상태 표시 창과 GUI 이벤트 루프 |
-| 전역 단축키 | Control + grave/backslash 및 Esc 처리, 키보드 배열·반복 입력·충돌 검증 |
-| 텍스트 삽입 | 클립보드·앱 전환 없이 Unicode 삽입, 포커스·IME·선택 영역·권한 경계 검증 |
-| 자동 시작 | LaunchAgent 대체 방식 선정, 명시적 설치·제거와 중복 실행 방지 |
-| 패키징 | Python 및 의존성 제공 방식, 설치·업데이트·제거, 배포 서명 검토 |
+| CLI transport | Implement Windows interactive-console transport to replace Unix PTY and `fcntl`, and replace or verify support for local Unix-socket communication; validate input, output, termination, and cancellation with candidates such as ConPTY |
+| External-editor callback | Windows path quoting, encoding, process invocation, temporary data, and session isolation |
+| HUD | A non-activating status window and GUI event loop to replace AppKit |
+| Global hotkeys | Control + grave/backslash and Esc handling; keyboard layouts, key repeat, and conflicts |
+| Text insertion | Unicode insertion without the clipboard or app switching; focus, IME, selections, and permission boundaries |
+| Automatic startup | Choose a LaunchAgent replacement; explicit installation and removal, and prevention of duplicate instances |
+| Packaging | Python and dependency distribution, installation, updates, removal, and distribution signing |
 
-위 내용은 구현 계획이며 특정 Windows API로 성공했다는 결과가 아닙니다. 사용자 로그인과 동의는 Windows에서도 공식 CLI에서 직접 수행해야 합니다.
+This is an implementation plan, not evidence of success with any particular Windows API. Users must still handle login and consent themselves in the official CLI on Windows.
 
-## 완료 기준
+## Completion criteria
 
-깨끗한 Windows 환경에서 실제 음성 → 일반 텍스트 편집기 삽입을 검증하고, 클립보드·포커스 유지, 녹음·처리 취소, 지연 콜백 폐기, 한국어·영문·이모지, 네트워크 실패와 프로세스 종료를 시험해야 합니다. 일반 권한과 권한이 다른 대상 앱, 보안 입력 필드의 제한도 따로 기록합니다. macOS의 기존 성공 사례를 Windows 근거로 사용하지 않습니다.
+Validate real speech-to-text insertion into a normal text editor on a clean Windows environment. Test clipboard and focus preservation, cancellation during recording and processing, rejection of delayed callbacks, Korean and English text, emoji, network failures, and process termination. Separately document limitations for target apps running with standard or different privileges and for secure input fields. Existing macOS successes are not evidence of Windows support.

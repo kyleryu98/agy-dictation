@@ -1,37 +1,37 @@
-# 공개·배포 전 체크리스트
+# Publication and release checklist
 
-MIT 라이선스를 적용했으며 현재 공개 저장소는 없습니다. 아래 항목은 공개·배포 전 확인할 기준입니다. 체크되어 있지 않은 항목을 완료된 사실로 읽지 마세요.
+The project is MIT licensed and publicly available at [kyleryu98/agy-dictation](https://github.com/kyleryu98/agy-dictation). The items below track publication and release checks. Unchecked items are not complete.
 
-## 코드와 문서
+## Code and documentation
 
-- [x] `pyproject.toml`의 Python 요구사항·개발 의존성과 README 명령이 일치한다.
-- [x] 모듈 책임, 설정, 단축키, 실제 서비스 실행 진입점이 문서와 일치한다.
-- [x] 단위 테스트가 0개 발견된 상태를 성공으로 처리하지 않고 실제 실행 수와 결과를 확인한다.
-- [x] 진단 도구가 실제 음성 입력 또는 계정 자격을 검증했다고 과장하지 않는다.
-- [x] 빌드 스크립트는 앱·LaunchAgent 메타데이터만 준비하고 설치·등록·실행하지 않는다.
+- [x] Python requirements and development dependencies in `pyproject.toml` match the README commands.
+- [x] Documentation matches module responsibilities, configuration, hotkeys, and the actual service entry point.
+- [x] Verify the number of tests run and their results; do not treat discovery of zero tests as success.
+- [x] Diagnostics do not overstate validation of actual voice input or account eligibility.
+- [x] The build script only stages the app and LaunchAgent metadata; it does not install, register, or run them.
 
-## 계정과 데이터
+## Accounts and data
 
-- [x] 무료 개인 계정의 CLI 접근 안내와 무료 음성 실측 여부를 구분한다. 미시험 상태에서는 무료 음성 검증 완료나 무제한을 주장하지 않는다.
-- [x] 비즈니스·엔터프라이즈 음성 미지원과 정확한 Gemini Audio 모델 버전 미확인을 명시한다.
-- [x] 공식 CLI에서 사용자가 직접 로그인·동의·작업 폴더 신뢰를 처리한다.
-- [x] 현재 공개 후보 소스·문서·wheel/sdist·Git 이력에 인증·토큰·실제 전사문·음성·로그·개인 식별 경로가 없는지 검사했다.
-- [x] 공개할 작성자 정보와 업무용 도메인을 사용자 승인 후 설정했다. 커밋 후 `--check-identity`로 이력까지 재검사한다.
-- [x] 임시 데이터의 접근 제한, 링크 거부, 단회 콜백과 취소 정리를 회귀 테스트했다.
+- [x] Distinguish guidance on CLI access for free personal accounts from actual free-account voice testing. Do not claim verified free voice use or unlimited usage when untested.
+- [x] State that voice is unsupported for business and enterprise accounts and that the exact Gemini Audio model version is unconfirmed.
+- [x] Users handle login, consent, and working-directory trust themselves in the official CLI.
+- [x] Check the current publication-candidate source, documentation, wheel/sdist, and Git history for authentication data, tokens, real transcripts, audio, logs, and personally identifying paths.
+- [x] Set public author information and the work email domain with user approval. Recheck history with `--check-identity` after committing.
+- [x] Regression-test temporary-data access restrictions, link rejection, single-use callbacks, and cancellation cleanup.
 
-## macOS 검증
+## macOS validation
 
-- [ ] [테스트 절차](testing.md)에 따라 재구성판을 깨끗한 Mac에 설치해 실제 종단 간 검증한다.
-- [ ] 실제 음성 삽입, 포커스·클립보드 유지, 녹음·처리 취소와 기존 텍스트 보존을 확인한다.
-- [ ] 취소 후 늦은 결과, 빠른 재시작, 포커스 이동, 권한 거부와 네트워크 실패를 검증한다.
-- [ ] 기존 개인용 구현 결과와 재구성판 결과를 분리해 기록한다.
+- [ ] Install the rebuilt version on a clean Mac and perform real end-to-end validation using the [test procedure](testing.md).
+- [ ] Verify actual voice insertion, focus and clipboard preservation, cancellation during recording and processing, and preservation of existing text.
+- [ ] Verify late results after cancellation, rapid restarts, focus changes, denied permissions, and network failures.
+- [ ] Record results for the original personal implementation separately from those for the rebuilt version.
 
-## 배포와 라이선스
+## Distribution and licensing
 
-- [x] 소유자가 MIT 라이선스를 선택했으며 `LICENSE`·패키지 메타데이터·외부 소프트웨어 안내에 반영했다.
-- [ ] 공개 저장소를 실제로 만든 뒤 정확한 주소를 문서에 추가한다.
-- [x] 로컬 번들의 기존 Python 프레임워크·모듈 의존성과 소스 폴더 유지 조건을 명시했다.
-- [ ] 독립 배포를 목표로 할 경우 의존성 패키징, 서명·공증, 새 Mac 실행 검증을 별도로 완료한다.
-- [x] 설치·시작·중지·제거 도구와 사용법을 마련하고 격리된 파일/명령 흐름을 테스트했다.
-- [ ] 새 Mac에서 실제 서비스 등록·재로그인·권한 승인·음성 입력까지 검증한다.
-- [x] Windows는 실제 이식과 검증 전까지 미지원으로 표시했다.
+- [x] The owner selected the MIT license, reflected in `LICENSE`, package metadata, and third-party software notices.
+- [x] Create the public repository and add its exact URL to the documentation: [https://github.com/kyleryu98/agy-dictation](https://github.com/kyleryu98/agy-dictation).
+- [x] Document the local bundle's dependency on the existing Python framework and modules, and the requirement to retain the source directory.
+- [ ] If targeting standalone distribution, separately complete dependency packaging, signing, notarization, and execution checks on a clean Mac.
+- [x] Provide installation, start, stop, and removal tools with usage instructions, and test their file and command flows in isolation.
+- [ ] On a clean Mac, verify actual service registration, logging back in, permission approval, and voice input.
+- [x] Mark Windows as unsupported until it has been ported and validated.

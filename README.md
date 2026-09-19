@@ -1,24 +1,31 @@
 # AGY Dictation
 
-**맥의 입력칸에서 단축키를 누르고 말하면, 하단 녹음창을 거쳐 현재 커서에 글을 넣습니다.** 공식 Antigravity CLI의 음성 전사를 사용하는 독립적인 도구입니다. Google의 공식 제품은 아닙니다.
+**English** | [한국어](README.ko.md)
 
-- `Control + ₩`: 녹음 시작 → 다시 눌러 종료 → 전사 → 자동 입력
-- 하단 창에 녹음 시간과 처리 상태 표시, 완료 후 자동 닫힘
-- `Esc` 또는 ×로 취소
-- 입력 대상 앱 전환과 클립보드 사용 없음
+Press a shortcut, speak, and insert the transcript at your cursor—with a recording and processing overlay. AGY Dictation is an independent macOS tool that uses voice transcription in the official Antigravity CLI. It is not an official Google product.
 
-> **macOS 개발자 프리뷰입니다.** Windows는 아직 지원하지 않습니다. 소스에서 설치하는 방식이며, 다른 컴퓨터에 바로 배포할 독립 실행형 DMG는 제공하지 않습니다. 모든 앱·입력칸의 호환성을 검증한 것은 아닙니다.
+- Press **Control + backtick** or **Control + backslash** to start recording; press again to transcribe and insert.
+- See recording time and processing status in a small overlay at the bottom of the screen.
+- Cancel with **Esc** or the overlay's × button.
+- Keep focus in your app, without switching windows or using the clipboard.
 
-## 설치 전 준비
+> **macOS developer preview.** Installation is from source. There is no standalone DMG, Windows support, or guarantee of compatibility with every app and input field. The current overlay text is in Korean; English documentation does not change the app's UI language.
 
-1. **macOS와 Python.org 프레임워크 Python**이 필요합니다. 원래 환경은 Python 3.13에서 검증했습니다. [Python macOS 설치 프로그램](https://www.python.org/downloads/macos/)을 사용할 수 있습니다. 일반 Python 실행만 가능한 환경이나 일부 Homebrew 설치는 앱 빌드 조건을 충족하지 않을 수 있습니다.
-2. [공식 AGY CLI](https://antigravity.google/docs/cli/install)를 설치합니다. 터미널에서 `agy --version`이 동작해야 합니다.
-3. 본인의 **AGY 개인 계정**으로 로그인합니다. 무료 개인 계정도 공식 안내상 CLI를 사용할 수 있습니다. 이 프로젝트의 무료 음성 실측은 아직 하지 않았으며 무제한 사용을 보장하지 않습니다. 비즈니스·엔터프라이즈 계정의 음성 입력은 현재 공식 문서상 미지원입니다.
-4. 소스를 내려받아 압축을 풀거나 Git으로 복제한 뒤, 아래 명령을 **저장소 최상위 폴더**에서 실행합니다.
+## Requirements
 
-## 설치와 첫 실행
+1. **macOS and a Python.org framework installation of Python.** The original environment was tested with Python 3.13. Use the [Python macOS installer](https://www.python.org/downloads/macos/). A working `python3` command alone does not guarantee that the helper app can be built; some Homebrew installations may not meet its requirements.
+2. Install the [official AGY CLI](https://antigravity.google/docs/cli/install) and confirm that `agy --version` works.
+3. Use your own **personal AGY account**. Official documentation describes CLI access for free personal accounts, but this project has not tested voice transcription on a free account and does not promise unlimited usage. The referenced voice documentation lists business and enterprise accounts as unsupported.
+4. Clone the repository and run the following commands from its root:
 
-### 1. 환경 준비와 앱 빌드
+```sh
+git clone https://github.com/kyleryu98/agy-dictation.git
+cd agy-dictation
+```
+
+## Install and start
+
+### 1. Prepare the environment and build the helper
 
 ```sh
 python3 -m venv .venv
@@ -27,81 +34,80 @@ python3 -m venv .venv
 .venv/bin/python scripts/build_macos.py --output dist
 ```
 
-`doctor --strict`가 실패하면 출력에서 빠진 항목을 먼저 해결하세요. 빌드는 `dist`에 결과를 만들며 설치나 실행을 하지 않습니다. `dist`가 이미 있으면 비어 있는 다른 출력 폴더를 지정하세요.
+Resolve any missing requirements reported by `doctor --strict` before continuing. The build writes to `dist`; it does not install or start anything. If that directory already exists, use a different, empty output directory.
 
-### 2. 이 Mac에 설치
+### 2. Install on this Mac and set up the CLI
 
 ```sh
 .venv/bin/python scripts/manage_macos.py install --from-build dist --apply
 .venv/bin/python scripts/manage_macos.py setup-cli --apply
 ```
 
-`setup-cli`는 전사용 폴더에서 공식 AGY CLI를 엽니다. 본인이 로그인·초기 안내·이용약관·해당 폴더 신뢰 여부를 확인한 뒤 CLI를 종료하세요. 이 도구는 동의 버튼을 대신 누르거나 에이전트에 작업을 자동 제출하지 않습니다.
+`setup-cli` opens the official CLI in the dictation working directory. Complete login, onboarding, terms, and directory trust yourself, then exit the CLI. The integration does not accept terms for you or automatically submit agent tasks.
 
-설치 도구는 기존 앱·서비스 파일이 있으면 덮어쓰지 않습니다. 이 단계에서는 로그인 서비스를 시작하지 않습니다.
+Installation refuses to overwrite existing app or service files. It does not start the login service at this stage.
 
-### 3. macOS 권한 설정과 시작
+### 3. Grant macOS permissions and start the service
 
 ```sh
 .venv/bin/python scripts/manage_macos.py permissions
 ```
 
-출력된 Python 앱을 **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 허용합니다. macOS 버전에 따라 항목 이름이 **기기 제어 및 데이터 접근**으로 표시될 수 있습니다.
+Allow the Python app shown in the output under **System Settings → Privacy & Security → Accessibility**. Depending on your macOS version, the permission category may be labeled **Device Control & Data Access**.
 
 ```sh
 .venv/bin/python scripts/manage_macos.py start --apply
 .venv/bin/python scripts/manage_macos.py status
 ```
 
-처음 뜨는 **ProListen Voice Engine의 마이크 접근 요청**은 직접 허용하세요. 권한을 허용하기 전에 서비스가 멈췄다면 `start --apply`를 다시 실행합니다. 권한은 자동으로 허용되지 않습니다.
+Approve **ProListen Voice Engine's microphone request** when it appears. If the service stopped before you granted permission, run `start --apply` again. Permissions are never granted automatically.
 
-### 4. 첫 받아쓰기
+### 4. Try dictation
 
-메모장 역할의 빈 TextEdit 문서에서 입력 위치를 클릭하고 `Control + ₩`를 눌러 보세요. 하단에 **녹음 중**이 뜬 뒤 말하고, 같은 키를 다시 누르면 **글로 바꾸는 중 → 입력 완료** 순서로 진행합니다. 메시지 전송 버튼이나 Enter는 자동으로 누르지 않습니다.
+Open a blank TextEdit document and click where you want to type. Press **Control + backtick** or **Control + backslash**, wait for the recording overlay, and speak. Press the same shortcut again to finish. The overlay should progress from recording to processing to completion. The tool does not press Enter or send your message.
 
-미국식 키보드 기준으로 Control + grave/backtick 또는 Control + backslash를 감지합니다. 한글 자판의 ₩ 표기는 키보드마다 위치가 다를 수 있습니다.
+On Korean keyboards, the shortcut is commonly labeled **Control + ₩**. The listener recognizes the physical grave/backtick and backslash keys; the location of the ₩ label varies by keyboard. The current overlay uses Korean text: `녹음 중` (recording), `글로 바꾸는 중` (transcribing), and `입력 완료` (inserted).
 
-## 다음 로그인부터
+## Automatic startup
 
-`start --apply`는 사용자 로그인 서비스를 등록합니다. 이후 로그인하면 자동으로 준비되며 AGY 데스크톱 앱이나 터미널 창을 따로 켤 필요가 없습니다. 인터넷 연결과 AGY 로그인 상태는 필요합니다.
+`start --apply` registers a per-user login service. It is configured to start at subsequent logins without an AGY desktop app or terminal window. Internet access and a valid AGY login are still required. Startup after a fresh login on another Mac remains part of the validation checklist.
 
-**설치 후 저장소 폴더와 `.venv`, Python 프레임워크를 옮기거나 지우지 마세요.** 현재 개발용 앱은 이 컴퓨터의 해당 경로와 모듈에 의존합니다. 다른 사람에게 `dist`를 전달하지 말고 소스에서 각자 빌드하도록 안내하세요.
+**Do not move or delete the repository, `.venv`, or Python framework after installation.** The development helper depends on their local paths. Other users should build from source on their own Mac instead of copying your `dist` folder.
 
-## 중지·업데이트·삭제
+## Stop, update, or uninstall
 
 ```sh
 .venv/bin/python scripts/manage_macos.py stop --apply
 .venv/bin/python scripts/manage_macos.py uninstall --apply
 ```
 
-중지는 이 버전의 서비스와 인증된 음성 엔진만 종료합니다. 삭제는 설치한 앱·실행 파일·LaunchAgent를 제거하며 **로그, 복구 전사문, 공식 AGY 로그인 정보, 원본 저장소는 보존**합니다.
+Stopping shuts down this version's service and authenticated voice engine. Uninstalling removes its app, launcher, and LaunchAgent. It **preserves logs, recovery transcripts, official AGY login data, and the source checkout**.
 
-업데이트는 중지 → 삭제 → 소스/의존성 업데이트 → 새로운 출력 폴더에 빌드 → 설치 → 시작 순서입니다. [설치·문제 해결 문서](docs/installation.md)를 참고하세요.
+To update: stop → uninstall → update source and dependencies → build into a new output directory → install → start. See the [installation guide](docs/installation.md).
 
-`--apply`를 생략하면 변경 계획만 표시합니다. `status`, `permissions`, `doctor.py`는 읽기 전용입니다. 다른 받아쓰기 도구와 같은 단축키를 동시에 사용하지 마세요.
+Without `--apply`, lifecycle commands only show a plan. `status`, `permissions`, and `doctor.py` are read-only. Avoid assigning the same shortcut to multiple dictation tools.
 
-## 문제 해결
+## Troubleshooting
 
-| 증상 | 확인할 것 |
+| Symptom | Check |
 | --- | --- |
-| 앱 빌드 실패 | `doctor.py --strict`, Python.org 프레임워크 설치 여부 |
-| 단축키 무반응 | Python 제어 권한, 입력칸 포커스, 서비스 상태, 다른 앱 단축키 충돌 |
-| 로그인/폴더 신뢰 안내 | `setup-cli --apply`를 직접 실행해 초기 설정 완료 |
-| 마이크 권한 안내 | ProListen Voice Engine 마이크 허용 후 재시작 |
-| 입력 위치가 바뀌었다는 안내 | 녹음 중 다른 입력칸으로 이동하거나 내용을 수정하지 않기 |
-| 기존 설치가 있다고 나옴 | 먼저 해당 버전을 중지·삭제. 임의로 파일을 덮어쓰지 않기 |
+| Helper build fails | Run `doctor.py --strict`; check the Python.org framework installation. |
+| Shortcut does nothing | Check Python's control permission, field focus, service status, and shortcut conflicts. |
+| Login or directory trust is required | Run `setup-cli --apply` and complete setup interactively. |
+| Microphone permission is required | Allow microphone access for ProListen Voice Engine, then restart. |
+| Input target changed | Keep the same field focused and avoid editing its contents while recording. |
+| An existing installation is detected | Stop and uninstall that version first; do not overwrite files manually. |
 
-오류 때 전사문이 `~/Library/Application Support/ProListenDictation/last-transcript.txt`에 남을 수 있습니다. 로그와 복구문은 공개 이슈에 그대로 올리지 마세요.
+After an error, a recovery transcript may remain at `~/Library/Application Support/ProListenDictation/last-transcript.txt`. Do not post raw transcripts or logs in public issues.
 
-## 검증 상태와 한계
+## Validation and limitations
 
-- 원래 개인용 구현에서 한국어 음성 → TextEdit 직접 입력, 포커스·클립보드 유지, 취소 동작을 확인했습니다.
-- 재구성판은 정적 검사·단위 테스트·패키지 빌드·격리된 설치/삭제 파일 흐름을 검증합니다. **새 Mac의 실제 계정 로그인·권한 설정·마이크 입력까지 검증한 것은 아닙니다.** [검증 기록](docs/testing.md)
-- AGY CLI의 대화형 음성 및 외부 편집기 기능에 의존하므로 CLI 업데이트에 영향을 받을 수 있습니다. 정확한 전사 모델 버전은 확인되지 않았습니다.
-- 암호 입력란과 접근성 정보를 제공하지 않는 일부 앱은 지원되지 않을 수 있습니다. 재부팅·다양한 IME·앱별 실사용 검증은 계속 필요합니다.
-- 이 저장소의 연동 소스는 [MIT 라이선스](LICENSE)로 제공합니다. 공식 AGY CLI·Python·외부 라이브러리에는 각자의 라이선스와 이용약관이 적용됩니다. [외부 소프트웨어 안내](THIRD_PARTY_NOTICES.md)를 확인하세요.
+- The original personal implementation was tested with Korean speech inserted directly into TextEdit, unchanged focus and clipboard, and cancellation.
+- The reorganized source has static checks, unit tests, package builds, and isolated installation/removal tests. **Real account login, permission setup, and microphone input on a clean Mac have not been validated.** See the [testing record](docs/testing.md).
+- The integration depends on the CLI's interactive voice and external-editor features. CLI updates may affect it. The exact transcription model version is unconfirmed.
+- Password fields and apps that do not expose sufficient accessibility information may be unsupported. Reboot behavior, different input methods, and app compatibility still need real-world testing.
 
-## 개발·기여
+## Development and documentation
 
 ```sh
 .venv/bin/python -m pip install -e '.[dev]'
@@ -109,19 +115,25 @@ python3 -m venv .venv
 .venv/bin/python -m ruff check .
 ```
 
-테스트는 실제 마이크, 사용자 입력, 로그인 변경, 권한 부여를 수행하면 안 됩니다.
+Automated tests must not use a real microphone, type into user applications, change login state, or grant permissions.
 
 ```text
-src/agy_dictation/     전사 연결·설정·결과 교환
-  macos/              하단 창·전역 단축키·마이크 보조 앱
-scripts/              진단·빌드·명시적 설치/실행/삭제
-packaging/macos/       앱 권한 선언
-tests/                격리된 자동 테스트
-docs/                 구조·설치·개인정보·검증·Windows 계획
+src/agy_dictation/     CLI integration, configuration, and result exchange
+  macos/              Overlay, global shortcuts, and microphone helper
+scripts/              Diagnostics, builds, and explicit lifecycle commands
+packaging/macos/       App entitlement declarations
+tests/                Isolated automated tests
+docs/                 Architecture, installation, privacy, and validation
 ```
 
-[구조](docs/architecture.md) · [설치](docs/installation.md) · [개인정보](docs/privacy.md) · [보안 감사](docs/security-audit.md) · [Windows 계획](docs/windows-port.md) · [공개 체크리스트](docs/release-checklist.md)
+English is the primary documentation language. [README.ko.md](README.ko.md) provides the Korean installation and usage guide. Detailed technical and security documentation is maintained in English; keep both READMEs in sync when changing setup or behavior.
 
-공개 전에는 `python scripts/prepublish_check.py --check-identity`로 이력과 작성자 정보를 확인합니다. 승인한 업무용 도메인 또는 GitHub no-reply 주소를 허용하며 토큰·개인 경로 검사는 유지합니다. `python scripts/install_git_guard.py --apply`로 로컬 커밋 검사를 설치할 수 있습니다.
+[Architecture](docs/architecture.md) · [Installation](docs/installation.md) · [Privacy](docs/privacy.md) · [Security audit](docs/security-audit.md) · [Windows port](docs/windows-port.md) · [Release checklist](docs/release-checklist.md)
 
-공식 참고: [요금제](https://antigravity.google/docs/plans) · [CLI 설치](https://antigravity.google/docs/cli/install) · [음성 입력](https://www.antigravity.google/docs/cli/commands/voice/)
+Before publishing changes, run `python scripts/prepublish_check.py --check-identity` to check source, Git history, and author identity. Approved business email domains or GitHub no-reply addresses are allowed; token and personal-path checks remain enabled. Install the local commit guard with `python scripts/install_git_guard.py --apply`.
+
+## License
+
+The integration source is available under the [MIT License](LICENSE). The official AGY CLI, Python, and third-party libraries retain their own licenses and terms. See [third-party notices](THIRD_PARTY_NOTICES.md).
+
+Official references: [Plans](https://antigravity.google/docs/plans) · [CLI installation](https://antigravity.google/docs/cli/install) · [Voice input](https://www.antigravity.google/docs/cli/commands/voice/)

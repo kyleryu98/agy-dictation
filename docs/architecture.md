@@ -1,49 +1,49 @@
-# 구조와 책임
+# Architecture and responsibilities
 
-AGY Dictation은 자체 음성 모델이나 별도 인증 클라이언트가 아닙니다. 사용자의 공식 AGY CLI를 대화형으로 제어하고, CLI 입력란의 전사 결과를 외부 편집기 콜백으로 받아 macOS 입력 위치에 전달하는 실험입니다.
+AGY Dictation is neither a speech model nor a separate authentication client. It is an experiment that controls the user's official AGY CLI interactively, retrieves the transcript from the CLI input field through an external-editor callback, and inserts it at the macOS cursor position.
 
 ```text
-전역 단축키 → macOS 서비스 / 상태 제어 → PTY의 공식 AGY CLI
-                    ↓                       ↓
-                AppKit HUD            대화형 음성 입력
-                    ↑                       ↓
-                 처리 결과 ← 외부 편집기 콜백
-                    ↓
-            Unicode 네이티브 입력 이벤트
-                    ↓
-               현재 앱의 입력 위치
+Global hotkey → macOS service / state control → Official AGY CLI in a PTY
+                         ↓                               ↓
+                     AppKit HUD                 Interactive voice input
+                         ↑                               ↓
+                  Processing result ← External-editor callback
+                         ↓
+               Native Unicode input events
+                         ↓
+                Current app's input position
 ```
 
-## 모듈 계약
+## Module contracts
 
-아래는 현재 구현된 모듈과 도구입니다. 진단은 읽기 전용이며 빌드는 결과 파일만 생성합니다. 실제 함수명, 상태 이름, 설정 키와 실행 진입점은 구현 파일이 최종 기준입니다.
+These modules and tools are currently implemented. Diagnostics are read-only, and builds only generate artifacts. The implementation files are the source of truth for function names, states, configuration keys, and entry points.
 
-| 경로 | 책임 |
+| Path | Responsibility |
 | --- | --- |
-| `src/agy_dictation/config.py` | 실행 경로와 설정 관리 |
-| `src/agy_dictation/cli_backend.py` | 공식 CLI의 대화형 세션과 Unix PTY 전송 관리 |
-| `src/agy_dictation/export_prompt.py` | 외부 편집기 콜백을 통해 결과 전달 |
-| `src/agy_dictation/macos/service.py` | 전역 단축키, 대상 포커스 확인, 취소 및 네이티브 입력 제어 |
-| `src/agy_dictation/macos/engine.py` | 별도 음성 엔진 프로세스, 마이크 권한 및 CLI 세션 제어 |
-| `src/agy_dictation/macos/hud.py` | Python + PyObjC AppKit 상태 표시 |
-| `scripts/doctor.py` | 환경 진단 |
-| `scripts/build_macos.py` | 로컬 앱 번들과 LaunchAgent 메타데이터 준비 |
-| `scripts/manage_macos.py` | 명시적 설치·CLI 초기 설정·시작·중지·삭제 |
+| `src/agy_dictation/config.py` | Runtime paths and configuration |
+| `src/agy_dictation/cli_backend.py` | Interactive sessions with the official CLI and Unix PTY transport |
+| `src/agy_dictation/export_prompt.py` | Result delivery through the external-editor callback |
+| `src/agy_dictation/macos/service.py` | Global hotkeys, target focus verification, cancellation, and native input |
+| `src/agy_dictation/macos/engine.py` | Separate voice-engine process, microphone permissions, and CLI sessions |
+| `src/agy_dictation/macos/hud.py` | Status display using Python, PyObjC, and AppKit |
+| `scripts/doctor.py` | Environment diagnostics |
+| `scripts/build_macos.py` | Staging local app bundles and LaunchAgent metadata |
+| `scripts/manage_macos.py` | Explicit installation, CLI setup, start, stop, and removal |
 
-CLI의 터미널 출력과 외부 편집기 동작은 CLI 버전 변화에 영향을 받을 수 있습니다. 안정된 공개 전사 API를 직접 호출하는 통합으로 설명하면 안 됩니다. 음성 입력은 CLI의 대화형 TUI 기능이므로 `--print`로 대체할 수 없습니다. [공식 음성 문서](https://www.antigravity.google/docs/cli/commands/voice/)
+CLI terminal output and external-editor behavior may change between CLI versions. Do not describe this integration as a direct call to a stable public transcription API. Voice input is an interactive CLI TUI feature and cannot be replaced with `--print`. See the [official voice documentation](https://www.antigravity.google/docs/cli/commands/voice/).
 
-서비스와 음성 엔진은 로컬 Unix 소켓으로 통신합니다. 이 통신도 Windows 이식 대상입니다.
+The service and voice engine communicate through a local Unix socket. This transport also needs attention in a Windows port.
 
-## 지켜야 할 동작
+## Required behavior
 
-- HUD는 입력 대상 앱의 포커스를 빼앗지 않고 녹음·처리 상태를 보여야 합니다.
-- 성공 결과만 한 번 삽입하며, 클립보드에 쓰거나 붙여넣기를 위해 앱을 전환하지 않습니다.
-- 취소와 오류는 기존 텍스트를 유지해야 합니다. 취소한 세션의 늦은 콜백은 폐기해야 합니다.
-- 빠른 재시작, 중복 단축키, 프로세스 종료가 중복 삽입이나 이전 세션 결과 삽입으로 이어지지 않아야 합니다.
-- 전사를 가져오는 절차가 CLI의 일반 에이전트 프롬프트 제출로 이어지지 않는지 검증해야 합니다.
+- The HUD must show recording and processing status without taking focus from the target app.
+- Insert a successful result exactly once, without writing to the clipboard or switching apps to paste.
+- Cancellation and errors must preserve existing text. Discard late callbacks from canceled sessions.
+- Rapid restarts, repeated hotkeys, and process termination must not cause duplicate insertion or insertion of a previous session's result.
+- Verify that retrieving a transcript does not submit it as a regular CLI agent prompt.
 
-이 항목들은 검증 계약입니다. 새 저장소가 모두 충족했다는 테스트 결과를 뜻하지 않습니다. 입력 이벤트 전달 자체도 대상 앱이 실제 텍스트를 수용했다는 증거는 아니므로 화면 결과까지 확인해야 합니다.
+These are validation requirements, not evidence that the rebuilt repository meets them all. Sending input events alone does not prove that the target app accepted the text; verify the visible result as well.
 
-## 패키징 경계
+## Packaging boundaries
 
-로컬 번들 빌드는 기존 Python 프레임워크와 모듈에 의존합니다. LaunchAgent 메타데이터 생성과 실제 등록·자동 시작은 별개입니다. 빌드 스크립트는 설치·등록·실행을 하지 않습니다. 별도 관리 도구의 `--apply`를 사용자가 실행할 때만 설치·서비스 변경을 수행합니다. 독립 배포에는 의존성 포함 방식, 서명, 공증과 새 Mac 검증이 추가로 필요합니다.
+Local bundle builds depend on the existing Python framework and modules. Generating LaunchAgent metadata is separate from registering a service or enabling automatic startup. The build script does not install, register, or run anything. Only an explicit user invocation of the separate management tool with `--apply` installs files or changes services. Standalone distribution requires additional dependency packaging, signing, notarization, and validation on a clean Mac.

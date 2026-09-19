@@ -1,45 +1,45 @@
-# 공개 전 개인정보·보안 점검
+# Pre-publication privacy and security audit
 
-검사일: 2026-09-19. 대상: 이 저장소의 공개 후보 소스/문서/설정, Git 객체와 이력, 생성한 wheel/sdist. 현재 사용 중인 별도 개인용 설치본은 변경하지 않았습니다.
+Audit date: 2026-09-19. Scope: this repository's publication-candidate source, documentation, and configuration; Git objects and history; and generated wheel/sdist packages. The separate personal installation in active use was not changed.
 
-## 결론
+## Findings
 
-- 공개 후보에서 개인 홈 경로, 계정 이메일, 인증 토큰, 개인 키, 실제 전사문/녹음/로그를 발견하지 못했습니다.
-- 초기 검사 시 커밋·Git 객체·원격 저장소가 없는 상태였습니다. 첫 커밋 이후에는 커밋 이력도 다시 검사합니다.
-- 초기 검사에서는 작성자 이메일 공개 여부가 미정이었습니다. 이후 사용자가 업무용 이메일 공개를 선택했으므로 `privacy-policy.json`의 `prolisten.net` 도메인을 커밋 작성자·커미터에 허용합니다. 이름과 해당 업무용 이메일은 커밋 메타데이터로 공개됩니다.
-- 로컬 pre-commit 검사 장치를 설치했습니다. 승인된 업무용 도메인과 GitHub no-reply 주소는 허용하고, 그 밖의 주소는 차단합니다. GitHub 업로드/푸시는 하지 않았습니다.
+- No personal home paths, account emails, authentication tokens, private keys, real transcripts, recordings, or logs were found in the publication candidate.
+- At the initial inspection, there were no commits, Git objects, or remote repository. Commit history must also be rechecked after the first commit. The repository is now public at [kyleryu98/agy-dictation](https://github.com/kyleryu98/agy-dictation) under the MIT license; publication does not expand the scope of the initial audit.
+- Whether to publish an author email was undecided during the initial inspection. The user later chose to publish a work email, so `privacy-policy.json` allows the `prolisten.net` domain for commit authors and committers. The name and work email are public commit metadata.
+- A local pre-commit guard was installed. It allows the approved work email domain and GitHub no-reply addresses, and blocks other addresses. No GitHub upload or push was performed as part of that initial audit; the repository has since been published.
 
-## 수행한 검사
+## Checks performed
 
-| 검사 | 결과와 범위 |
+| Check | Result and scope |
 | --- | --- |
-| 로컬 개인정보 검사 | 공개 후보 파일, staged 스냅샷, 도달 가능한 Git 이력/커밋 메타데이터 검사 |
-| detect-secrets | 오프라인 패턴 검사, 후보 0개. 토큰의 온라인 유효성 검사는 하지 않음 |
-| Python 패키지 내부 검사 | wheel/sdist를 추출하지 않고 내용 검사, 개인정보·비밀정보 후보 0개 |
-| pip-audit | 검사 당시 설치된 런타임 의존성 및 전이 의존성 12개, 알려진 취약점 보고 0개 |
-| Bandit | 높음/중간 0개. 낮음 13개는 필요한 subprocess 호출과 오류 정리 경로로 검토함 |
-| 자동 테스트 | 65개 통과. 실제 마이크·사용자 입력·권한 변경 없는 회귀 테스트 |
-| Ruff 및 패키지 빌드 | 통과 |
-| 기존 설치본 보존 | 저장소 밖의 사용 중인 설치 파일은 변경하지 않음 |
+| Local privacy scan | Publication-candidate files, staged snapshot, and reachable Git history and commit metadata |
+| detect-secrets | Offline pattern scan: zero candidates. Token validity was not checked online |
+| Python package inspection | Inspected wheel/sdist contents without extracting them: zero personal-data or secret candidates |
+| pip-audit | Zero known vulnerabilities reported across the 12 installed runtime and transitive dependencies at the time of inspection |
+| Bandit | Zero high- or medium-severity findings. The 13 low-severity findings were reviewed as necessary subprocess calls and error-cleanup paths |
+| Automated tests | 65 passed. Regression tests without real microphone use, user input, or permission changes |
+| Ruff and package build | Passed |
+| Existing installation preservation | Active installation files outside the repository were not changed |
 
-이는 검사 시점의 범위와 결과이며, 알려지지 않은 취약점이나 모든 개인정보 형식을 탐지한다는 보장은 아닙니다. 새 코드·의존성·파일을 추가하면 다시 실행해야 합니다.
+These results apply to the scope and time of the inspection. They do not guarantee detection of unknown vulnerabilities or every form of personal data. Rerun the checks when adding code, dependencies, or files.
 
-## 수정한 위험 요소
+## Risks addressed
 
-- 런타임 파일: 디렉터리 0700, 파일 0600, 소유자/파일 타입/링크 수 검사, 심볼릭 링크 거부, 고유 임시 파일과 원자적 교체.
-- 전사 전달: 녹음 세션에 묶인 단회 요청, 오래된/중복 응답 거부, 취소·오류 후 전달 파일 정리. 세션 간 CLI 재시작으로 이전 편집기 콜백이 새 요청을 가져가지 못하게 함.
-- 로컬 IPC: 동일 사용자 확인, 엔진별 임의 capability, 명령·응답 스키마와 프레임 크기·시간 제한, 동시 처리 수 제한, 엔진 중복 실행 잠금.
-- 입력: 제어 문자·잘못된 Unicode·과도한 길이 거부, 보조 키 대기 후 포커스 재확인. 디버그용 녹음 시작 신호 제거.
-- 로그: 수신 원문·예외 원문·전사문을 로그나 오류 응답으로 반환하지 않고 고정 코드/예외 타입 사용. 대상 앱 식별자 로그 제거.
-- 하위 프로세스: private umask, 로더/인터프리터 주입 환경변수 제거, 절대 편집기 경로, 자식 프로세스 그룹 정리.
-- CI: 공식 GitHub Actions를 확인한 commit SHA에 고정하고 자격 증명 저장을 끔.
-- 빌드: 출력 폴더 자동 Git 제외, 소스 디렉터리와 겹치는 출력 및 소스 심볼릭 링크 거부.
+- Runtime files: directory permissions of 0700 and file permissions of 0600; ownership, file-type, and link-count checks; rejection of symbolic links; unique temporary files and atomic replacement.
+- Transcript delivery: single-use requests tied to recording sessions; rejection of stale or duplicate responses; exchange-file cleanup after cancellation or errors. Restarting the CLI between sessions prevents an earlier editor callback from consuming a new request.
+- Local IPC: same-user verification, a random per-engine capability, command and response schemas, frame-size and time limits, concurrency limits, and a lock against duplicate engine instances.
+- Input: rejection of control characters, invalid Unicode, and excessive length; focus rechecking after waiting for modifier keys to be released. Removed a recording-start signal used for debugging.
+- Logs: fixed codes and exception types instead of raw received content, exception messages, or transcripts in logs and error responses. Removed target-app identifier logging.
+- Subprocesses: restrictive umask, removal of environment variables that permit loader or interpreter injection, absolute editor paths, and child-process-group cleanup.
+- CI: official GitHub Actions pinned to verified commit SHAs, with credential persistence disabled.
+- Builds: automatic Git exclusions for output directories; rejection of output paths that overlap the source directory and rejection of source symbolic links.
 
-## 공개하면 안 되는 로컬 산출물
+## Local artifacts that must not be published
 
-개발용 `.app`, `runtime.json`, LaunchAgent plist, 실행용 편집기 wrapper, `INSTALL.txt`에는 **빌드한 컴퓨터의 절대 경로가 포함될 수 있습니다.** 이는 독립 배포 파일이 아닙니다. 소스와 분리하고 Git에 넣지 마세요. 빌드 스크립트는 사용자 지정 출력 폴더에도 제외 규칙을 생성합니다. `.git` 폴더와 로컬 훅도 압축해서 공개하지 마세요.
+Development `.app` bundles, `runtime.json`, LaunchAgent plists, runtime editor wrappers, and `INSTALL.txt` **may contain absolute paths from the build machine.** They are not standalone distribution artifacts. Keep them separate from source and out of Git. The build script also creates exclusion rules for custom output directories. Do not archive and publish the `.git` directory or local hooks.
 
-## 공개 전 실행
+## Commands to run before publication
 
 ```sh
 python scripts/prepublish_check.py
@@ -48,13 +48,13 @@ python scripts/prepublish_check.py --artifact dist/package.whl --artifact dist/p
 python scripts/install_git_guard.py --apply
 ```
 
-시스템 Git이 작동하지 않으면 `AGY_AUDIT_GIT`에 정상 Git 실행 파일 경로를 지정할 수 있습니다. 검사 결과에는 일치한 비밀 값 대신 파일·행·문제 종류만 출력합니다. `--personal-marker`로 공개하면 안 되는 식별자를 로컬에서 추가 검사할 수 있습니다. 해당 값을 저장소에 기록하지 마세요.
+If system Git is unavailable, set `AGY_AUDIT_GIT` to the path of a working Git executable. Scan output shows only the file, line, and issue type, not the matching secret value. Use `--personal-marker` to check locally for additional identifiers that must not be published. Do not record those values in the repository.
 
-공개를 승인한 업무용 도메인 또는 자신의 GitHub no-reply 주소를 **이 저장소의 로컬 Git 설정**에 적용한 뒤 작성자 검사를 실행합니다. 업무용 도메인 승인은 추적되는 `privacy-policy.json`에 명시하며 소스·패키지의 비밀정보 검사까지 완화하지 않습니다. 훅은 우회 가능한 개발 도구이므로 공개 직전 수동 검사를 대체하지 않습니다.
+Set the approved work email domain or your own GitHub no-reply address in **this repository's local Git configuration**, then run the author-identity check. Work-domain approval is recorded in the tracked `privacy-policy.json`; it does not relax secret scanning of source or packages. Hooks are bypassable development tools and do not replace a manual check immediately before publication.
 
-## 남은 검증과 경계
+## Remaining validation and boundaries
 
-- 보안 수정판의 새 Mac 설치, 실제 음성 입력, 시작 지연 및 앱별 호환성은 재검증하지 않았습니다. MIT 라이선스는 적용했으며 배포용 서명·공증·Windows 구현은 별도 단계입니다.
-- 신뢰한 사용자 계정과 설정된 상위 디렉터리를 전제로 합니다. 같은 사용자 권한을 탈취한 악성 코드나 관리자/root까지 격리하는 보안 경계가 아닙니다.
-- 최종 입력 이벤트와 사용자의 동시 조작을 완전히 원자적으로 묶을 수는 없습니다. 일부 입력 필드/앱은 보수적으로 실패할 수 있습니다.
-- 전사는 공식 AGY CLI의 클라우드 기능입니다. Google 측 데이터 처리나 CLI 자체 로그/임시 파일의 보존을 이 저장소가 통제하지 않습니다.
+- Installation of the security-hardened version on a clean Mac, real voice input, startup latency, and per-app compatibility have not been revalidated. The MIT license is in place; distribution signing, notarization, and Windows implementation are separate steps.
+- The design assumes a trusted user account and configured parent directories. It does not isolate the app from malware with the same user's privileges or from an administrator/root user.
+- Final input events and simultaneous user actions cannot be made fully atomic. Some input fields or apps may fail conservatively.
+- Transcription uses the official AGY CLI's cloud feature. This repository does not control Google's data processing or retention of the CLI's own logs and temporary files.

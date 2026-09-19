@@ -1,20 +1,20 @@
-# 검증 방법과 증거 범위
+# Validation procedures and evidence limits
 
-## 현재 확보된 근거
+## Available evidence
 
-| 대상 | 근거 | 한계 |
+| Subject | Evidence | Limitation |
 | --- | --- | --- |
-| 원래 개인용 구현 | 실제 음성 → TextEdit 입력 3회, 포커스·클립보드 유지 | 원래 개인 환경에서의 결과 |
-| 원래 개인용 구현 취소 | 녹음·처리 중 취소 약 0.2초 관찰 | 성능 보장·회귀 테스트 수치 아님 |
-| 재구성 저장소 | 깨끗한 Mac 설치 및 종단 간 재시험 미완료 | 기존 성공 결과를 승계할 수 없음 |
-| 무료 개인 계정 음성 | 실제 시험하지 않음 | 공식 제공 안내와 실측을 구분 |
-| Windows | 구현하지 않음 | 테스트 통과 또는 지원 주장 불가 |
+| Original personal implementation | Three real speech-to-TextEdit insertions, with focus and clipboard preserved | Results from the original personal environment |
+| Cancellation in the original personal implementation | Approximately 0.2 seconds observed when canceling during recording or processing | Not a performance guarantee or regression-test metric |
+| Rebuilt repository | Clean-Mac installation and end-to-end retesting are incomplete | Cannot inherit the earlier implementation's successful results |
+| Voice on a free personal account | Not tested with an actual account | Distinguish official availability guidance from measured results |
+| Windows | Not implemented | No basis for claiming passing tests or support |
 
-기존 결과는 프로젝트 인계에서 제공된 관찰 이력입니다. 이 문서 작성 과정에서 음성을 녹음하거나 서비스·계정·자동 시작 설정을 변경하지 않았습니다.
+Earlier results are observations provided in the project handoff. No audio was recorded, and no service, account, or automatic-startup settings were changed while writing this document.
 
-## 로컬 개발 확인
+## Local development checks
 
-아래는 저장소 루트 기준 예정 명령입니다. 문서에 명령이 있다는 사실은 실행 성공의 증거가 아닙니다.
+The following commands are intended to be run from the repository root. Listing a command here is not evidence that it has run successfully.
 
 ```sh
 python3 -m venv .venv
@@ -24,45 +24,45 @@ python3 -m venv .venv
 .venv/bin/python scripts/build_macos.py --output dist
 ```
 
-단위 테스트는 발견된 테스트 수, 실패와 건너뛴 항목을 함께 확인합니다. 실제 마이크·권한·외부 서비스·대상 앱을 거치지 않은 테스트로 받아쓰기 성공을 주장하지 않습니다. 진단은 환경 점검이며 실제 CLI 음성 자격이나 네이티브 입력 성공을 대신하지 않습니다.
+Check the number of discovered unit tests, failures, and skipped tests. Tests that do not exercise the real microphone, permissions, external service, and target app cannot establish successful dictation. Diagnostics check the environment; they do not verify actual CLI voice eligibility or successful native insertion.
 
-빌드는 로컬 앱과 LaunchAgent 메타데이터 준비 단계입니다. 앱 설치·등록·실행은 수행하지 않아야 합니다. 출력물의 Python 경로와 모듈 의존성, 개인정보 포함 여부를 검사하되 로컬 경로가 담긴 출력물을 공개하지 않습니다.
+A build stages the local app and LaunchAgent metadata. It must not install, register, or run the app. Inspect the artifacts' Python paths, module dependencies, and possible personal data, but do not publish artifacts containing local paths.
 
-## 수동 종단 간 시험
+## Manual end-to-end testing
 
-재구성판의 실제 설치·실행 절차가 확정된 후, 테스트 담당자가 본인의 공식 CLI 온보딩과 macOS 권한 설정을 직접 완료한 환경에서 수행합니다. 합성 발화만 사용하며 실제 전사문과 실행 로그를 저장소에 넣지 않습니다.
+Run this procedure once the rebuilt version's installation and startup procedure is established, in an environment where the tester has personally completed official CLI onboarding and macOS permission setup. Use synthetic speech examples only. Do not add real transcripts or runtime logs to the repository.
 
-1. TextEdit의 테스트 문서에 기준 텍스트를 넣고 커서를 둡니다. 클립보드에는 비민감한 기준값을 준비합니다.
-2. Control + grave/backtick 또는 Control + backslash로 녹음을 시작합니다. HUD가 보이며 TextEdit 포커스가 유지되는지 확인합니다.
-3. 짧은 한국어·영문 혼합 예문을 말하고 같은 단축키로 종료합니다. 처리 표시와 실제 입력 결과, 클립보드·포커스 유지 여부를 확인합니다. 독립적인 3회 이상 실행을 기록합니다.
-4. 녹음 중 Esc, 처리 중 Esc를 각각 시험합니다. 기존 텍스트가 유지되고 지연 결과도 삽입되지 않는지 확인합니다. 약 0.2초라는 이전 관찰값 대신 이번 환경의 실제 지연을 기록합니다.
-5. 빈 발화, 긴 문장, Unicode·이모지, IME 조합, 선택 영역, 빠른 재시작과 중복 단축키를 시험합니다. 실패·취소가 선택 텍스트를 지우지 않는지 확인합니다.
-6. 처리 중 다른 입력 위치로 이동하거나 앱을 바꾸는 경우를 별도 시험하여 실제 삽입 대상과 안전한 실패 여부를 확인합니다.
-7. 네트워크 실패, CLI 종료, 콜백 누락·지연, 권한 거부를 시험합니다. 원치 않는 프롬프트 제출, 중복 삽입, 남은 프로세스·임시 데이터 여부를 확인합니다.
+1. Put baseline text in a TextEdit test document and position the cursor. Set the clipboard to a non-sensitive baseline value.
+2. Start recording with Control + grave/backtick or Control + backslash. Verify that the HUD appears and TextEdit retains focus.
+3. Speak a short example containing both Korean and English, then stop with the same hotkey. Check the processing indicator, actual inserted text, and preservation of the clipboard and focus. Record at least three independent runs.
+4. Test Esc during recording and during processing separately. Verify that existing text remains intact and delayed results are not inserted. Record the actual latency in this environment rather than reusing the earlier observation of approximately 0.2 seconds.
+5. Test empty speech, long sentences, Unicode and emoji, IME composition, selected text, rapid restarts, and repeated hotkeys. Verify that failures and cancellation do not delete selected text.
+6. Separately test moving to another input position or switching apps during processing. Check the actual insertion target and whether failures are handled safely.
+7. Test network failure, CLI termination, missing or delayed callbacks, and denied permissions. Check for unintended prompt submission, duplicate insertion, and leftover processes or temporary data.
 
-이 절차는 향후 테스트 지침입니다. 빌드 스크립트 실행만으로 수동 시험까지 수행되지는 않습니다.
+This is guidance for future testing. Running the build script does not perform these manual tests.
 
-## 결과 기록
+## Recording results
 
-macOS·Python·AGY CLI 버전, 저장소 리비전 또는 소스 스냅샷 식별자, 계정의 플랜 종류(이메일 제외), 대상 앱, 시험 항목, 성공·실패·미시험과 관찰 지연을 기록합니다. 원래 구현과 재구성판, 단위 테스트와 실제 음성 입력, 로컬 번들과 깨끗한 Mac 실행을 각각 구분합니다. 정확한 Gemini Audio 모델 버전은 확인되지 않은 상태로 남깁니다.
+Record the macOS, Python, and AGY CLI versions; repository revision or source-snapshot identifier; account plan type without the email address; target app; test case; pass, fail, or untested status; and observed latency. Keep the original implementation's results separate from the rebuilt version's results, unit tests separate from real voice input, and local bundle checks separate from execution on a clean Mac. Leave the exact Gemini Audio model version marked as unconfirmed.
 
-## 2026-09-19 저장소 정리 검증
+## 2026-09-19 repository cleanup validation
 
-- 이 Mac에서 자동 테스트 14개 통과. 실제 마이크나 사용자 입력을 발생시키지 않는 테스트입니다.
-- Ruff 검사 통과.
-- sdist 및 wheel 빌드 성공.
-- 개발용 macOS 앱과 LaunchAgent 메타데이터 생성, ad-hoc 서명 검증 성공.
-- 설치·서비스 등록·새 Mac 종단 간 시험은 수행하지 않았습니다. 기존 실행 서비스는 변경하지 않았습니다.
+- 14 automated tests passed on this Mac. These tests do not use the real microphone or generate user input.
+- Ruff passed.
+- sdist and wheel builds succeeded.
+- The development macOS app and LaunchAgent metadata were generated, and ad-hoc signature verification passed.
+- Installation, service registration, and clean-Mac end-to-end testing were not performed. The existing running service was not changed.
 
-## 2026-09-19 공개 전 보안 회귀 검사
+## 2026-09-19 pre-publication security regression checks
 
-65개 테스트 통과. 링크/파일 교체, 잘못된 소유자·권한, 오래된/중복 콜백, 취소 정리, IPC 인증·크기 제한, 제어 문자, modifier 대기 중 포커스 변경, staged 비밀정보 검사 등을 포함합니다. 실제 마이크·입력·권한 변경은 하지 않았습니다. 보안 변경으로 CLI가 녹음 세션 간 재시작되므로 시작 지연은 다음 실사용 검증에서 다시 측정해야 합니다.
+65 tests passed. Coverage includes link and file replacement, incorrect ownership and permissions, stale or duplicate callbacks, cancellation cleanup, IPC authentication and size limits, control characters, focus changes while waiting for modifier keys, and staged-secret scanning. No real microphone use, input, or permission changes occurred. Because the security changes restart the CLI between recording sessions, startup latency must be measured again during the next real-use validation.
 
-## 2026-09-19 새 사용자 경로 점검
+## 2026-09-19 new-user workflow checks
 
-- 새로운 가상환경에서 `pip install -e '.[dev]'` 성공.
-- Python.org 프레임워크·CLI·의존성 strict 진단 통과.
-- 자동 테스트 99개와 Ruff 통과. 설치 파일 배치/덮어쓰기 거부/실패 롤백/삭제 시 데이터 보존/설치 잠금/서비스 명령 흐름을 임시 디렉터리와 모의 시스템 명령으로 검증함.
-- 생성된 앱 번들의 ad-hoc 서명 검사와 실제 런처의 `engine_bootstrap.py --check` 통과. 이 검사는 모듈 로딩만 하며 마이크·UI·로그인 작업을 시작하지 않음.
-- 취소 debounce, 시작 중 취소, 초기 설정 오류 코드 전달, 마이크 미승인 상태에서 종료 요청 처리 회귀 검사 포함.
-- 새 Mac에서 사용자 승인과 실제 발화로 수행하는 전체 설치·자동 실행·입력 검증은 아직 남아 있음. 현재 사용 중인 별도 설치본은 변경하지 않음.
+- `pip install -e '.[dev]'` succeeded in a fresh virtual environment.
+- Strict diagnostics for the Python.org framework, CLI, and dependencies passed.
+- 99 automated tests and Ruff passed. Temporary directories and mocked system commands were used to validate installed-file placement, overwrite rejection, rollback on failure, data preservation during removal, installation locking, and service command flows.
+- The generated app bundle passed ad-hoc signature checks, and the actual launcher passed `engine_bootstrap.py --check`. This check only loads modules; it does not start microphone, UI, or login operations.
+- Regression coverage includes cancellation debounce, cancellation during startup, propagation of setup error codes, and handling shutdown requests before microphone access is approved.
+- Full installation, automatic startup, and text insertion on a clean Mac, with user approval and real speech, remain unverified. The separate installation currently in use was not changed.
