@@ -308,58 +308,133 @@ def capture_target():
     app = AK.NSWorkspace.sharedWorkspace().frontmostApplication()
     pid = app.processIdentifier()
     root = AX.AXUIElementCreateApplication(pid)
-    el = None
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 2.5
+    previous = None
     attempts = 0
     while time.monotonic() < end:
+        if cancel_requested.is_set():
+            raise BridgeError("녹음을 취소했습니다.")
         if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
             raise BridgeError("앱이 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
         el = focused_input(root)
         attempts += 1
-        if el is not None:
-            break
-        if attempts == 1:
+        if el is not None and "Secure" in attr(el, "AXSubrole", ""):
+            raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
+        selected = selection_range(el) if el is not None else None
+        before = value(el) if el is not None else None
+        valid = selected is not None and selected == selection_range(el) and (
+            before is None or sum(selected) <= len(before.encode("utf-16-le")) // 2
+        )
+        if valid:
+            candidate = {"pid": pid, "root": root, "target": el,
+                         "before": before, "range": selected}
+            if (previous is not None and same(el, previous["target"])
+                    and before == previous["before"] and selected == previous["range"]):
+                if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
+                    raise BridgeError("앱이 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
+                logging.info("target captured role=%s attempts=%s", attr(el, "AXRole", ""), attempts)
+                return candidate
+            previous = candidate
+        else:
+            previous = None
+        if attempts == 1 and not valid:
             request_accessibility(root)
         if threading.current_thread() is threading.main_thread():
             CF.CFRunLoopRunInMode(CF.kCFRunLoopDefaultMode, 0.08, False)
         else:
             time.sleep(0.08)
-    if el is None:
-        logging.info("focused input unavailable attempts=%s", attempts)
-        raise BridgeError("앱에서 입력 위치를 확인할 수 없어요. 입력칸에 커서를 놓고 다시 눌러 주세요.")
-    if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
-        raise BridgeError("앱이 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
-    if "Secure" in attr(el, "AXSubrole", ""):
-        raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
-    selected = selection_range(el)
-    before = value(el)
-    if selected is None or (
-        before is not None and sum(selected) > len(before.encode("utf-16-le")) // 2
-    ):
-        raise BridgeError("커서 위치를 확인할 수 없어 자동 입력을 중단했습니다.")
-    logging.info(
-        "target captured role=%s attempts=%s",
-        attr(el, "AXRole", ""),
-        attempts,
-    )
-    return {
-        "pid": pid,
-        "root": root,
-        "target": el,
-        "before": before,
-        "range": selected,
-    }
+    logging.info("focused input unavailable attempts=%s", attempts)
+    raise BridgeError("입력칸의 커서 위치를 확인할 수 없어요. 커서를 놓고 다시 눌러 주세요.")
+
+
+def target_state(s, *, final=False):
+    """Read AX as an asynchronous snapshot, never log values or selection offsets."""
+    if s.get("range") is None:
+        return "selection_unavailable"
+    if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != s["pid"]:
+        return "app_changed"
+    focused = focused_input(s["root"])
+    if focused is None:
+        return "focus_unavailable"
+    if not same(focused, s["target"]):
+        return "target_changed"
+    if "Secure" in attr(focused, "AXSubrole", ""):
+        return "secure"
+    selected = selection_range(focused)
+    actual = value(focused)
+    after = selection_range(focused)
+    if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != s["pid"]:
+        return "app_changed"
+    last_focus = focused_input(s["root"])
+    if last_focus is None:
+        return "focus_unavailable"
+    if not same(last_focus, focused):
+        return "target_changed"
+    # After the LAST chunk, exact full text proves delivery. There is no next input
+    # to protect, so a delayed caret update must not turn success into an error.
+    if final and s["before"] is not None and actual == s["before"]:
+        return "confirmed"
+    if selected is None or after is None:
+        return "selection_unavailable"
+    if selected != after:
+        return "selection_updating"
+    if s["before"] is not None and actual is None:
+        return "text_unavailable"
+    if s["before"] is not None and actual != s["before"]:
+        return "text_pending"
+    if selected != s["range"]:
+        return "selection_pending"
+    return "confirmed"
 
 
 def target_unchanged(s):
-    front = AK.NSWorkspace.sharedWorkspace().frontmostApplication()
-    return (
-        s.get("range") is not None
-        and front.processIdentifier() == s["pid"]
-        and same(focused_input(s["root"]), s["target"])
-        and (s["before"] is None or value(s["target"]) == s["before"])
-        and selection_range(s["target"]) == s["range"]
-    )
+    return target_state(s) == "confirmed"
+
+
+def wait_for_target(s, *, final=False, after_input=False, timeout=2.0):
+    """Pause writes through stale/intermediate AX data; never resend a chunk."""
+    deadline = time.monotonic() + timeout
+    stable_since = None
+    pending = None
+    state = "unavailable"
+    while time.monotonic() < deadline:
+        if cancel_requested.is_set():
+            raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
+        state = target_state(s, final=final)
+        if state in {"app_changed", "target_changed", "secure"}:
+            logging.info("input verification stopped reason=%s", state)
+            detail = "일부만 입력됐을 수 있어요." if after_input else "자동 입력하지 않았어요."
+            raise BridgeError("입력 위치가 바뀌어 중단했습니다. " + detail)
+        if state == "confirmed":
+            if stable_since is None:
+                stable_since = time.monotonic()
+            elif time.monotonic() - stable_since >= 0.04:
+                if pending is not None:
+                    logging.info("input verification recovered reason=%s", pending)
+                return
+        else:
+            stable_since = None
+            pending = state
+        time.sleep(0.02)
+    logging.info("input verification timeout reason=%s final=%s", state, final)
+    if after_input:
+        raise BridgeError("입력 결과 확인이 지연돼 중단했습니다. 일부만 입력됐을 수 있어요. 전체 문장은 복구 파일에 보관했습니다.")
+    raise BridgeError("커서 위치를 확인할 수 없어 자동 입력하지 않았어요. 전체 문장은 복구 파일에 보관했습니다.")
+
+
+def unicode_chunks(text):
+    """Keep each keyboard payload within 16 UTF-16 units, including emoji."""
+    chunk = ""
+    units = 0
+    for character in text:
+        width = len(character.encode("utf-16-le")) // 2
+        if units + width > 16:
+            yield chunk
+            chunk, units = "", 0
+        chunk += character
+        units += width
+    if chunk:
+        yield chunk
 
 
 def wait_modifiers():
@@ -374,11 +449,9 @@ def wait_modifiers():
 
 
 def inject(text, s):
-    if not target_unchanged(s):
-        raise BridgeError("입력 위치나 내용이 바뀌어 자동 입력을 중단했습니다.")
+    wait_for_target(s)
     wait_modifiers()
-    if cancel_requested.is_set() or not target_unchanged(s):
-        raise BridgeError("입력 위치나 내용이 바뀌어 자동 입력을 중단했습니다.")
+    wait_for_target(s)
     try:
         text = ipc.insertion_text(text)
     except ipc.ProtocolError:
@@ -387,16 +460,15 @@ def inject(text, s):
     if not text.strip():
         raise BridgeError("인식된 음성이 없습니다.")
     current = dict(s)
-    for start in range(0, len(text), 16):
+    chunks = list(unicode_chunks(text))
+    for index, chunk in enumerate(chunks):
         if cancel_requested.is_set():
             raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
-        if not target_unchanged(current):
-            raise BridgeError("입력 도중 커서나 내용이 바뀌어 중단했습니다. 전사문을 파일로 보관했습니다.")
+        wait_for_target(current, after_input=index > 0)
         if Q.CGEventSourceFlagsState(Q.kCGEventSourceStateCombinedSessionState) & (CTRL | OTHER):
             raise BridgeError("입력 도중 보조 키가 눌려 중단했습니다.")
         if "Secure" in attr(s["target"], "AXSubrole", ""):
             raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
-        chunk = text[start : start + 16]
         encoded = chunk.encode("utf-16-le")
         location, length = current["range"]
         expected_range = (location + len(encoded) // 2, 0)
@@ -417,22 +489,8 @@ def inject(text, s):
         # Wait for acknowledgement before sending another chunk. Never keep typing
         # after a same-field cursor move, inaccessible selection or rejected event.
         confirmed = {**current, "range": expected_range, "before": expected_value}
-        end = time.monotonic() + 0.8
-        while time.monotonic() < end:
-            if cancel_requested.is_set():
-                raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
-            if target_unchanged(confirmed):
-                current = confirmed
-                break
-            if (
-                AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier()
-                != s["pid"] or not same(focused_input(s["root"]), s["target"])
-                or selection_range(s["target"]) not in (current["range"], expected_range)
-            ):
-                raise BridgeError("입력 도중 커서 위치를 확인할 수 없어 중단했습니다.")
-            time.sleep(0.02)
-        else:
-            raise BridgeError("입력 결과를 확인할 수 없어 중단했습니다. 전사문을 파일로 보관했습니다.")
+        wait_for_target(confirmed, final=index == len(chunks) - 1, after_input=True)
+        current = confirmed
     return current["before"] is not None
 
 

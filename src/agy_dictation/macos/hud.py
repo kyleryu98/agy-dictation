@@ -20,9 +20,10 @@ def presentation(kind, detail=""):
     if kind == "inserting":
         return ("입력 중", "현재 커서에 넣고 있어요", True, "blue")
     if kind == "error":
-        return ("입력하지 못했어요", detail, False, "orange")
+        title = "입력을 완료하지 못했어요" if "일부만" in detail else "입력하지 못했어요"
+        return (title, detail, False, "orange")
     if kind == "idle" and "취소" in detail:
-        return ("취소했어요", "입력 내용은 바꾸지 않았어요", False, "gray")
+        return ("취소했어요", "음성입력을 중단했어요", False, "gray")
     if kind == "idle" and ("입력 확인" in detail or "입력 전송" in detail):
         return ("입력 완료", "", False, "green")
     return None

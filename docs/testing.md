@@ -124,3 +124,27 @@ Record the macOS, Python, and AGY CLI versions; repository revision or source-sn
   success, not an automated observation. The site, field type, selection handling
   and failure cases were not independently verified. Aside and the rest of the full
   compatibility matrix still require manual validation.
+
+## 2026-09-19 application-switch acknowledgement regression
+
+- Follow-up use exposed truncation and false error HUDs after successful insertion.
+  Diagnostics showed both immediate post-input rejection and the old 0.8-second
+  acknowledgement timeout. The previous single successful Chrome test did not cover
+  repeated app switches or asynchronous selection updates.
+- The same synthetic incremental-delivery scenario fails against the previous
+  insertion functions and passes against the corrected functions. It models a
+  temporarily missing focus/selection, an intermediate caret, first-chunk delay over
+  0.8 seconds, and multiple chunks with Korean/English/emoji. It verifies complete
+  delivery, preserved adjacent text and no duplicate posts without real typing.
+- Capture waits for matching cursor/content samples. Insertion pauses until a stable
+  acknowledgement arrives (up to two seconds), and stops immediately on a confirmed
+  app/field switch. Unavailable or intermediate AX data never authorizes another chunk.
+- Exact full text is sufficient to acknowledge the final chunk even when the caret
+  update is late. Intermediate chunks still require both text and cursor confirmation.
+  Persistent failures keep the recovery transcript and stop without resending input.
+- Payloads are limited by UTF-16 units, including surrogate-pair emoji. The HUD
+  distinguishes incomplete insertion from failure before any input. Diagnostic logs
+  contain fixed reason codes only, without text, selection offsets or credentials.
+- 132 automated tests and Ruff passed. The installed input functions and HUD were
+  updated with approval and the service returned to `idle`. Repeated live app-switch
+  results are tracked separately from the synthetic regression evidence.

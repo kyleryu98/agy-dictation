@@ -63,7 +63,7 @@ class MacOSTests(unittest.TestCase):
 
     def test_changed_focus_never_injects(self):
         with (
-            patch.object(b, "target_unchanged", return_value=False),
+            patch.object(b, "wait_for_target", side_effect=b.BridgeError("changed")),
             patch.object(b.Q, "CGEventPost") as post,
         ):
             with self.assertRaises(b.BridgeError):
@@ -305,7 +305,7 @@ class MacOSTests(unittest.TestCase):
 
     def test_target_is_rechecked_after_waiting_for_modifiers(self):
         with (
-            patch.object(b, "target_unchanged", side_effect=[True, False]),
+            patch.object(b, "wait_for_target", side_effect=[None, b.BridgeError("changed")]),
             patch.object(b, "wait_modifiers"),
             patch.object(b.Q, "CGEventPost") as post,
         ):
@@ -321,13 +321,20 @@ class FocusCompatibilityTests(unittest.TestCase):
     def setUp(self):
         b.cancel_requested.clear()
         self.attrs = {}
+        self.clock = 0.0
         for patcher in (
             patch.object(b, "attr", side_effect=self.read_attribute),
             patch.object(b, "same", side_effect=lambda a, c: a == c),
             patch.object(b.AX, "AXUIElementIsAttributeSettable", return_value=(-25205, False)),
+            patch.object(b.time, "monotonic", side_effect=lambda: self.clock),
+            patch.object(b.time, "sleep", side_effect=self.advance),
+            patch.object(b.CF, "CFRunLoopRunInMode", side_effect=lambda *args: self.advance(0.08)),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def advance(self, seconds):
+        self.clock += seconds
 
     def read_attribute(self, el, key, default=None):
         return self.attrs.get((el, key), default)
@@ -448,7 +455,7 @@ class FocusCompatibilityTests(unittest.TestCase):
         with (
             patch.object(b, "AK", kit),
             patch.object(b.AX, "AXUIElementCreateApplication", return_value="app"),
-            patch.object(b, "focused_input", side_effect=[None, "editor"]),
+            patch.object(b, "focused_input", side_effect=[None, "editor", "editor"]),
             patch.object(b, "selection_range", return_value=(0, 0)),
             patch.object(b, "request_accessibility") as activate,
             patch.object(b.CF, "CFRunLoopRunInMode"),
@@ -529,7 +536,7 @@ class FocusCompatibilityTests(unittest.TestCase):
             return True
 
         with (
-            patch.object(b, "target_unchanged", side_effect=unchanged),
+            patch.object(b, "wait_for_target", side_effect=lambda snapshot, **kwargs: unchanged(snapshot)),
             patch.object(b, "wait_modifiers"),
             patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
             patch.object(b.Q, "CGEventPost") as post,
@@ -545,7 +552,9 @@ class FocusCompatibilityTests(unittest.TestCase):
         kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
         with (
             patch.object(b, "AK", kit),
-            patch.object(b, "target_unchanged", side_effect=[True, True, True, False]),
+            patch.object(b, "wait_for_target", side_effect=[
+                None, None, None, b.BridgeError("커서 위치 확인 실패")
+            ]),
             patch.object(b, "wait_modifiers"),
             patch.object(b, "focused_input", return_value="editor"),
             patch.object(b, "selection_range", return_value=None),
@@ -555,3 +564,128 @@ class FocusCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(b.BridgeError, "커서 위치"):
                 b.inject("x" * 32, target)
         self.assertEqual(post.call_count, 2)
+
+    def test_delayed_incremental_browser_updates_do_not_truncate_or_duplicate(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "leftRIGHT", "range": (4, 0)}
+        message = "한글과 English 😀 입력을 앱 전환 직후에도 끝까지 확인합니다."
+        pending = {}
+        delivered = []
+        payload = [""]
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+
+        def view():
+            if not pending:
+                return target["before"], target["range"]
+            elapsed = self.clock - pending["time"]
+            chunk = pending["chunk"]
+            # First input after activation takes over the old 0.8s deadline.
+            ready = 1.1 if len(delivered) == 1 else 0.14
+            prefix = chunk if elapsed >= ready else chunk[:len(chunk) // 2]
+            encoded = prefix.encode("utf-16-le")
+            original = pending["before"].encode("utf-16-le")
+            location, length = pending["range"]
+            text = (original[:location * 2] + encoded + original[(location + length) * 2:]).decode("utf-16-le")
+            selected = None if elapsed < 0.04 else (location + len(encoded) // 2, 0)
+            return text, selected
+
+        def post(down):
+            if down:
+                before, selected = view()
+                pending.update(time=self.clock, before=before, range=selected, chunk=payload[0])
+                delivered.append(payload[0])
+
+        def focus(_):
+            elapsed = self.clock - pending["time"] if pending else 10
+            return None if 0.01 < elapsed < 0.03 else "editor"
+
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b, "focused_input", side_effect=focus),
+            patch.object(b, "selection_range", side_effect=lambda _: view()[1]),
+            patch.object(b, "value", side_effect=lambda _: view()[0]),
+            patch.object(b, "wait_modifiers"),
+            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
+            patch.object(b.Q, "CGEventCreateKeyboardEvent", side_effect=lambda a, c, down: down),
+            patch.object(b.Q, "CGEventKeyboardSetUnicodeString", side_effect=lambda e, n, t: payload.__setitem__(0, t)),
+            patch.object(b.Q, "CGEventPost", side_effect=lambda tap, event: post(event)) as send,
+        ):
+            self.assertTrue(b.inject(message, target))
+        self.assertEqual("".join(delivered), message)
+        self.assertEqual(view()[0], "left" + message + "RIGHT")
+        self.assertEqual(send.call_count, 2 * len(delivered))
+
+    def test_final_full_text_proof_does_not_require_late_caret_ack(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "complete", "range": (8, 0)}
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "selection_range", return_value=None),
+            patch.object(b, "value", return_value="complete"),
+        ):
+            self.assertEqual(b.target_state(target), "selection_unavailable")
+            b.wait_for_target(target, final=True)
+            with self.assertRaises(b.BridgeError):
+                b.wait_for_target(target, final=False)
+
+    def test_real_app_or_field_switch_stops_without_waiting(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "", "range": (0, 0)}
+        for reason in ("app_changed", "target_changed", "secure"):
+            started = self.clock
+            with patch.object(b, "target_state", return_value=reason):
+                with self.assertRaises(b.BridgeError):
+                    b.wait_for_target(target)
+            self.assertEqual(self.clock, started)
+
+    def test_persistent_missing_ack_never_sends_second_chunk(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "", "range": (0, 0)}
+        posted = []
+        with (
+            patch.object(b, "target_state", side_effect=lambda *a, **kw: "selection_unavailable" if posted else "confirmed"),
+            patch.object(b, "wait_modifiers"),
+            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
+            patch.object(b.Q, "CGEventPost", side_effect=lambda *args: posted.append(True)),
+            patch.object(b, "logging") as log,
+        ):
+            with self.assertRaises(b.BridgeError):
+                b.inject("sensitive synthetic sample" * 2, target)
+        self.assertEqual(len(posted), 2)
+        self.assertNotIn("sensitive synthetic sample", str(log.mock_calls))
+
+    def test_torn_range_snapshot_does_not_authorize_insertion(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "hello", "range": (5, 0)}
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "value", return_value="hello"),
+            patch.object(b, "selection_range", side_effect=[(2, 0), (5, 0)]),
+        ):
+            self.assertEqual(b.target_state(target), "selection_updating")
+
+    def test_capture_waits_for_first_cursor_snapshot_to_settle(self):
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b.AX, "AXUIElementCreateApplication", return_value="app"),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "value", return_value=""),
+            patch.object(b, "selection_range", side_effect=lambda _: None if self.clock < .16 else (0, 0)),
+            patch.object(b, "request_accessibility"),
+        ):
+            self.assertEqual(b.capture_target()["range"], (0, 0))
+        self.assertGreaterEqual(self.clock, .24)
+
+    def test_emoji_payloads_respect_utf16_event_budget(self):
+        text = "😀" * 30 + "한글"
+        chunks = list(b.unicode_chunks(text))
+        self.assertEqual("".join(chunks), text)
+        self.assertTrue(all(len(chunk.encode("utf-16-le")) // 2 <= 16 for chunk in chunks))
+
+    def test_partial_input_hud_does_not_claim_nothing_was_inserted(self):
+        title = presentation("error", "일부만 입력됐을 수 있어요.")[0]
+        self.assertEqual(title, "입력을 완료하지 못했어요")
