@@ -148,3 +148,11 @@ Record the macOS, Python, and AGY CLI versions; repository revision or source-sn
 - 132 automated tests and Ruff passed. The installed input functions and HUD were
   updated with approval and the service returned to `idle`. Repeated live app-switch
   results are tracked separately from the synthetic regression evidence.
+- The user initially reported successful complete insertion after app switches, then
+  supplied another failure HUD. New diagnostics classified those later failures as
+  `text_pending`, including after the final chunk. A read-only check found the full
+  recovery text present in an Aside input, but the original expected baseline was
+  no longer available. This residual false-negative remains under investigation;
+  it is not evidence that all repeated-switch cases are fixed. Mismatch diagnostics
+  now distinguish nonbreaking spaces, terminal newlines, outer whitespace, partial
+  prefixes and other differences using fixed codes only.

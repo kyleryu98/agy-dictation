@@ -689,3 +689,13 @@ class FocusCompatibilityTests(unittest.TestCase):
     def test_partial_input_hud_does_not_claim_nothing_was_inserted(self):
         title = presentation("error", "일부만 입력됐을 수 있어요.")[0]
         self.assertEqual(title, "입력을 완료하지 못했어요")
+
+    def test_text_mismatch_diagnostics_return_codes_without_contents(self):
+        for expected, actual, code in (
+            ("sample value", "sample\u00a0value", "nbsp"),
+            ("sample\n", "sample", "trailing_newline"),
+            (" sample ", "sample", "outer_whitespace"),
+            ("sample value", "sample", "prefix"),
+            ("sample", "different", "different"),
+        ):
+            self.assertEqual(b.text_relation(expected, actual), code)

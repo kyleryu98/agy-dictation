@@ -347,6 +347,23 @@ def capture_target():
     raise BridgeError("입력칸의 커서 위치를 확인할 수 없어요. 커서를 놓고 다시 눌러 주세요.")
 
 
+def text_relation(expected, actual):
+    """Classify mismatches without exposing either text in diagnostics."""
+    if not isinstance(actual, str):
+        return "unavailable"
+    if expected == actual:
+        return "exact"
+    if expected.replace("\u00a0", " ") == actual.replace("\u00a0", " "):
+        return "nbsp"
+    if expected.rstrip("\n") == actual.rstrip("\n"):
+        return "trailing_newline"
+    if expected.strip() == actual.strip():
+        return "outer_whitespace"
+    if expected.startswith(actual):
+        return "prefix"
+    return "different"
+
+
 def target_state(s, *, final=False):
     """Read AX as an asynchronous snapshot, never log values or selection offsets."""
     if s.get("range") is None:
@@ -381,7 +398,7 @@ def target_state(s, *, final=False):
     if s["before"] is not None and actual is None:
         return "text_unavailable"
     if s["before"] is not None and actual != s["before"]:
-        return "text_pending"
+        return "text_pending_" + text_relation(s["before"], actual)
     if selected != s["range"]:
         return "selection_pending"
     return "confirmed"
