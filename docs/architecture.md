@@ -44,44 +44,30 @@ The service and voice engine communicate through a local Unix socket. This trans
 
 These are validation requirements, not evidence that the rebuilt repository meets them all. Sending input events alone does not prove that the target app accepted the text; verify the visible result as well.
 
-## Input acknowledgement
+## Input flow
 
-The service inserts bounded Unicode keyboard chunks at the verified selection.
-It never sets the whole field's `AXValue` or tries `AXSelectedText` writes.
-Live Chrome verification found that `AXSelectedText` can be advertised as writable
-and report success without changing the field. Using that path would require an
-ambiguous retry and risk duplicate text. The service instead uses one keyboard
-path and never resends an unacknowledged chunk.
+Recording is not tied to the app where it began. When the user stops recording,
+the service captures the current editable field and selection. It finishes the
+provider session and saves the transcript even if that capture fails, so a missing
+input field does not leave the microphone recording or discard a finished result.
 
-Text reads prefer `AXStringForRange` with a stable character count and matching
-UTF-16 length, then fall back to `AXValue`. After writing, a single extra terminal
-newline in the exposed value is tolerated. Full-text confirmation does not discard
-missing characters or whitespace. Before the first write, the captured content
-and selection must still match exactly.
+Before typing, the service checks the captured field, original content, selection
+and modifier keys once. It then sends paced Unicode keyboard chunks directly,
+without clipboard use, whole-field setters or text/selection acknowledgement loops.
+Between chunks it checks only cancellation, modifiers, user activity and target
+identity. Keyboard and mouse-press events increment an in-memory activity counter;
+keys, click positions and their contents are not retained. Our own Unicode events
+carry a tag and do not increment that counter. A new user action or changed target
+stops later chunks instead of sending them somewhere else.
 
-Before each subsequent keyboard chunk, the original field must remain focused and
-its caret must stably match the expected UTF-16 position. Some editors keep stale
-text readback after moving their caret. A caret acknowledgement can therefore
-permit the next chunk when the text is exactly the original baseline, or an earlier
-stage of this insertion with the original neighboring text preserved. Unrelated
-text changes, a missing original suffix, a moved/unknown caret and changed focus
-still stop delivery. The service never resends a chunk to resolve stale readback.
+A single optional text read after sending can remove the recovery file if it exactly
+matches the expected result. Delayed or normalized text readback never blocks,
+retries or reports a completed send as an insertion failure. The completion HUD
+means dispatch finished; it is not a claim that every application has been tested.
 
-After the final write there are no more characters to send. Completion checks the
-captured field directly, so switching to another app does not invalidate text that
-has already arrived. A full text match confirms insertion. If the final caret is
-confirmed but text readback remains at a known earlier stage, the HUD reports
-"input sent" and retains the recovery transcript; it does not claim verified text
-or interrupt an otherwise acknowledged sentence. A final write without either
-form of acknowledgement still produces the uncertainty HUD. This acknowledgement
-timeout is separate from provider transcription finalization.
-
-The non-activating HUD paints a rounded dark background on a transparent view.
-It does not use a behind-window visual effect whose rectangular backing can remain
-visible outside a layer's rounded corners.
-
-API references: Apple's [text range attribute](https://developer.apple.com/documentation/applicationservices/kaxstringforrangeparameterizedattribute)
-and [Unicode keyboard event documentation](https://developer.apple.com/documentation/coregraphics/cgevent/keyboardsetunicodestring(stringlength:unicodestring:)).
+The HUD paints a rounded dark background on a transparent, non-activating view.
+Provider transcription remains in the CLI backend; it does not own focus, hotkeys,
+mouse handling, text insertion or the HUD.
 
 ## Packaging boundaries
 

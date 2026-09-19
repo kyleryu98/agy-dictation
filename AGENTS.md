@@ -6,6 +6,9 @@
 - Never store or print provider credentials, raw audio, or transcript contents in logs.
 - Never substitute a clipboard or foreground-app switch for direct cursor insertion.
 - Preserve the user's text if capture, finalization, or focus verification fails.
+- Keep insertion lightweight: bind the destination when recording stops, validate
+  once before typing, and stop on user interaction or a changed target. Do not add
+  per-chunk text reconciliation, caret-echo polling, or automatic input retries.
 - Windows support is not implemented. Do not claim all-app, unlimited, or free-account
   validation without matching evidence.
 - Build scripts stage artifacts only; installation and public GitHub publication are separate actions.

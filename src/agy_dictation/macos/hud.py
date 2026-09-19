@@ -14,21 +14,16 @@ def presentation(kind, detail=""):
     if kind == "recording":
         return ("녹음 중", "Ctrl + ₩로 완료 · Esc로 취소", False, "red")
     if kind == "transcribing":
-        return ("글로 바꾸는 중", "완료되면 현재 커서에 입력해요", True, "blue")
+        return ("글로 바꾸는 중", "잠시만 기다려 주세요", True, "blue")
     if kind == "cancelling":
         return ("취소 중", "입력하지 않고 녹음을 마쳐요", True, "gray")
     if kind == "inserting":
         return ("입력 중", "현재 커서에 넣고 있어요", True, "blue")
-    if kind == "unconfirmed":
-        return ("입력 확인이 필요해요", "입력칸을 확인해 주세요 · 복구문 보관됨", False, "orange")
-    if kind == "sent":
-        return ("입력 전송 완료", "", False, "gray")
     if kind == "error":
-        title = "입력을 완료하지 못했어요" if "일부만" in detail else "입력하지 못했어요"
-        return (title, detail, False, "orange")
+        return ("입력이 중단됐어요", detail, False, "orange")
     if kind == "idle" and "취소" in detail:
         return ("취소했어요", "음성입력을 중단했어요", False, "gray")
-    if kind == "idle" and ("입력 확인" in detail or "입력 전송" in detail):
+    if kind == "idle" and detail == "입력 완료":
         return ("입력 완료", "", False, "green")
     return None
 
@@ -170,7 +165,7 @@ class DictationHUD:
             self.started = time.monotonic()
         self.dismiss_at = (
             None if kind in ACTIVE else time.monotonic() + (
-                6 if kind in {"error", "unconfirmed"} else 0.85
+                6 if kind == "error" else 0.85
             )
         )
         if not self.visible:

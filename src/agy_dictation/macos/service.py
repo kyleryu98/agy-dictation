@@ -16,7 +16,7 @@ import AppKit as AK
 import Quartz as Q
 import CoreFoundation as CF
 import objc
-from pynput import keyboard
+from pynput import keyboard, mouse
 from .hud import DictationHUD
 from ..config import BASE, LOG, ENGINE_APP, ENGINE_BOOTSTRAP, ensure_private_dir
 from .. import ipc, secure_files as sf
@@ -24,6 +24,7 @@ from .. import ipc, secure_files as sf
 CTRL = Q.kCGEventFlagMaskControl
 OTHER = Q.kCGEventFlagMaskCommand | Q.kCGEventFlagMaskAlternate | Q.kCGEventFlagMaskShift
 HOTKEY_CODES = {50, 42}
+INPUT_EVENT_TAG = 0x41475944
 ops = queue.Queue()
 busy = False
 session = None
@@ -33,14 +34,11 @@ last_trigger = 0.0
 status_view = ("starting", "")
 backend = None
 cancel_requested = threading.Event()
+input_generation = 0
 
 
 class BridgeError(Exception):
     pass
-
-
-class InputUnconfirmed(BridgeError):
-    """All input was sent, but the original field did not acknowledge its text."""
 
 
 class EngineError(BridgeError):
@@ -65,21 +63,6 @@ def same(a, b):
 
 
 def value(el):
-    # Some web editors expose a rendered AXValue with an extra paragraph newline.
-    # Prefer the actual text range when supported, using UTF-16 just like the caret.
-    count = attr(el, "AXNumberOfCharacters")
-    if type(count) is int and 0 <= count <= ipc.MAX_TRANSCRIPT * 2:
-        try:
-            selected = AX.AXValueCreate(AX.kAXValueCFRangeType, (0, count))
-            err, text = AX.AXUIElementCopyParameterizedAttributeValue(
-                el, "AXStringForRange", selected, None
-            )
-            if (err == 0 and isinstance(text, str)
-                    and len(text.encode("utf-16-le")) // 2 == count
-                    and attr(el, "AXNumberOfCharacters") == count):
-                return str(text)
-        except Exception:
-            pass
     v = attr(el, "AXValue")
     return str(v) if isinstance(v, str) else None
 
@@ -324,16 +307,18 @@ def request_accessibility(root):
 
 
 def capture_target():
+    """Bind the field selected when the user stops recording."""
     app = AK.NSWorkspace.sharedWorkspace().frontmostApplication()
     pid = app.processIdentifier()
     root = AX.AXUIElementCreateApplication(pid)
     end = time.monotonic() + 2.5
-    previous = None
+    activity = input_generation
     attempts = 0
     while time.monotonic() < end:
         if cancel_requested.is_set():
             raise BridgeError("녹음을 취소했습니다.")
-        if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
+        if (input_generation != activity
+                or AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid):
             raise BridgeError("앱이 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
         el = focused_input(root)
         attempts += 1
@@ -345,17 +330,12 @@ def capture_target():
             before is None or sum(selected) <= len(before.encode("utf-16-le")) // 2
         )
         if valid:
-            candidate = {"pid": pid, "root": root, "target": el,
-                         "before": before, "range": selected}
-            if (previous is not None and same(el, previous["target"])
-                    and before == previous["before"] and selected == previous["range"]):
-                if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid:
-                    raise BridgeError("앱이 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
-                logging.info("target captured role=%s attempts=%s", attr(el, "AXRole", ""), attempts)
-                return candidate
-            previous = candidate
-        else:
-            previous = None
+            if (input_generation != activity
+                    or AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != pid
+                    or not same(focused_input(root), el)):
+                raise BridgeError("입력 위치가 바뀌었습니다. 입력칸에서 다시 눌러 주세요.")
+            return {"pid": pid, "root": root, "target": el,
+                    "before": before, "range": selected, "activity": activity}
         if attempts == 1 and not valid:
             request_accessibility(root)
         if threading.current_thread() is threading.main_thread():
@@ -364,149 +344,6 @@ def capture_target():
             time.sleep(0.08)
     logging.info("focused input unavailable attempts=%s", attempts)
     raise BridgeError("입력칸의 커서 위치를 확인할 수 없어요. 커서를 놓고 다시 눌러 주세요.")
-
-
-def text_relation(expected, actual):
-    """Classify mismatches without exposing either text in diagnostics."""
-    if not isinstance(actual, str):
-        return "unavailable"
-    if expected == actual:
-        return "exact"
-    if expected.replace("\u00a0", " ") == actual.replace("\u00a0", " "):
-        return "nbsp"
-    if expected.rstrip("\n") == actual.rstrip("\n"):
-        return "trailing_newline"
-    if expected.strip() == actual.strip():
-        return "outer_whitespace"
-    if expected.startswith(actual):
-        return "prefix"
-    return "different"
-
-
-def delivered_text_matches(expected, actual):
-    # Accept only one ADDED terminal paragraph separator. Never trim a missing
-    # character, space, or an existing newline; prefix matches are not delivery.
-    return isinstance(actual, str) and (actual == expected or actual == expected + "\n")
-
-
-def pending_input_snapshot(s, actual):
-    """Accept stale readback only when it is a known stage of our own insertion."""
-    if not isinstance(actual, str) or not s.get("input_written"):
-        return False
-    baseline = s.get("input_baseline")
-    if baseline is None:
-        return False
-    if actual == baseline:
-        return True
-    prefix, suffix = s["input_context"]
-    if not actual.startswith(prefix) or not actual.endswith(suffix):
-        return False
-    end = len(actual) - len(suffix) if suffix else len(actual)
-    if end < len(prefix):
-        return False
-    return s["input_sent"].startswith(actual[len(prefix):end])
-
-
-def target_state(s, *, final=False):
-    """Read AX as an asynchronous snapshot, never log values or selection offsets."""
-    if final and s["before"] is not None:
-        # No more writes follow. Verify the captured element even after the user
-        # switches apps; checking the new foreground field would misreport success.
-        actual = value(s["target"])
-        if delivered_text_matches(s["before"], actual):
-            return "confirmed"
-        selected = selection_range(s["target"])
-        if (selected is not None and selected == s.get("range")
-                and selected == selection_range(s["target"])
-                and pending_input_snapshot(s, actual)):
-            return "cursor_confirmed"
-        return "text_pending_" + text_relation(s["before"], actual)
-    if s.get("range") is None:
-        return "selection_unavailable"
-    if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != s["pid"]:
-        return "app_changed"
-    focused = focused_input(s["root"])
-    if focused is None:
-        return "focus_unavailable"
-    if not same(focused, s["target"]):
-        return "target_changed"
-    if "Secure" in attr(focused, "AXSubrole", ""):
-        return "secure"
-    selected = selection_range(focused)
-    actual = value(focused)
-    after = selection_range(focused)
-    if AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != s["pid"]:
-        return "app_changed"
-    last_focus = focused_input(s["root"])
-    if last_focus is None:
-        return "focus_unavailable"
-    if not same(last_focus, focused):
-        return "target_changed"
-    if selected is None or after is None:
-        return "selection_unavailable"
-    if selected != after:
-        return "selection_updating"
-    if s["before"] is not None and actual is None:
-        return "text_unavailable"
-    matches = actual == s["before"]
-    if s.get("input_written") and s["before"] is not None:
-        matches = delivered_text_matches(s["before"], actual)
-    if s["before"] is not None and not matches:
-        if selected == s["range"] and pending_input_snapshot(s, actual):
-            return "cursor_confirmed"
-        return "text_pending_" + text_relation(s["before"], actual)
-    if selected != s["range"]:
-        return "selection_pending"
-    return "confirmed"
-
-
-def target_unchanged(s):
-    return target_state(s) == "confirmed"
-
-
-def wait_for_target(s, *, final=False, after_input=False, timeout=2.0):
-    """Pause writes through stale/intermediate AX data; never resend a chunk."""
-    deadline = time.monotonic() + timeout
-    stable_since = None
-    stable_state = None
-    pending = None
-    state = "unavailable"
-    while time.monotonic() < deadline:
-        if cancel_requested.is_set():
-            raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
-        state = target_state(s, final=final)
-        if state in {"app_changed", "target_changed", "secure"}:
-            logging.info("input verification stopped reason=%s", state)
-            detail = "일부만 입력됐을 수 있어요." if after_input else "자동 입력하지 않았어요."
-            raise BridgeError("입력 위치가 바뀌어 중단했습니다. " + detail)
-        if state in {"confirmed", "cursor_confirmed"}:
-            if stable_since is None or stable_state != state:
-                stable_since = time.monotonic()
-                stable_state = state
-            elif time.monotonic() - stable_since >= 0.04:
-                if state == "confirmed" or not final:
-                    if pending is not None:
-                        logging.info("input verification recovered reason=%s", pending)
-                    return state == "confirmed"
-        else:
-            stable_since = None
-            pending = state
-        time.sleep(0.02)
-    if (state == "cursor_confirmed" and stable_since is not None
-            and time.monotonic() - stable_since >= 0.04):
-        logging.info("input sent; caret confirmed, text readback pending")
-        return False
-    selected = selection_range(s["target"])
-    logging.info(
-        "input verification timeout reason=%s final=%s caret_matches=%s known_snapshot=%s",
-        state, final, selected is not None and selected == s.get("range"),
-        pending_input_snapshot(s, value(s["target"])),
-    )
-    if final and after_input:
-        raise InputUnconfirmed("입력은 보냈지만 결과를 확인하지 못했어요. 전체 문장은 복구 파일에 보관했습니다.")
-    if after_input:
-        raise BridgeError("입력 결과 확인이 지연돼 중단했습니다. 일부만 입력됐을 수 있어요. 전체 문장은 복구 파일에 보관했습니다.")
-    raise BridgeError("커서 위치를 확인할 수 없어 자동 입력하지 않았어요. 전체 문장은 복구 파일에 보관했습니다.")
 
 
 def unicode_chunks(text):
@@ -527,37 +364,14 @@ def unicode_chunks(text):
 def wait_modifiers():
     end = time.monotonic() + 3
     while time.monotonic() < end:
+        if cancel_requested.is_set():
+            raise BridgeError("입력을 취소했습니다. 전사문을 파일로 보관했습니다.")
         if not Q.CGEventSourceFlagsState(Q.kCGEventSourceStateCombinedSessionState) & (
             CTRL | OTHER
         ):
             return
         time.sleep(0.02)
     raise BridgeError("보조 키를 놓아 주세요. 전사문을 파일로 보관했습니다.")
-
-
-def insertion_result(s, text):
-    encoded = text.encode("utf-16-le")
-    location, length = s["range"]
-    expected = None
-    if s["before"] is not None:
-        original = s["before"].encode("utf-16-le")
-        if location < 0 or length < 0 or (location + length) * 2 > len(original):
-            raise BridgeError("커서 위치를 확인할 수 없어 자동 입력을 중단했습니다.")
-        try:
-            expected = (original[:location * 2] + encoded + original[(location + length) * 2:]).decode("utf-16-le")
-        except UnicodeDecodeError:
-            raise BridgeError("커서 위치를 확인할 수 없어 자동 입력을 중단했습니다.") from None
-    result = {**s, "range": (location + len(encoded) // 2, 0),
-              "before": expected, "input_written": True}
-    if "input_baseline" not in s:
-        result["input_baseline"] = s["before"]
-        if s["before"] is not None:
-            result["input_context"] = (
-                original[:location * 2].decode("utf-16-le"),
-                original[(location + length) * 2:].decode("utf-16-le"),
-            )
-    result["input_sent"] = s.get("input_sent", "") + text
-    return result
 
 
 def check_input_keys():
@@ -568,38 +382,72 @@ def check_input_keys():
         raise BridgeError("입력 도중 보조 키가 눌려 중단했습니다.")
 
 
+def ensure_input_target(s, *, before_input=False):
+    """Guard where we type; never wait for an editor to echo our own text."""
+    if input_generation != s["activity"]:
+        raise BridgeError("다른 입력이 감지돼 중단했습니다. 전사문은 복구 파일에 보관했습니다.")
+    front = AK.NSWorkspace.sharedWorkspace().frontmostApplication()
+    if front.processIdentifier() != s["pid"]:
+        raise BridgeError("앱이 바뀌어 입력을 중단했습니다. 전사문은 복구 파일에 보관했습니다.")
+    direct = attr(s["root"], "AXFocusedUIElement")
+    if not same(direct, s["target"]) and not same(focused_input(s["root"]), s["target"]):
+        raise BridgeError("입력칸이 바뀌어 중단했습니다. 전사문은 복구 파일에 보관했습니다.")
+    if "Secure" in attr(s["target"], "AXSubrole", ""):
+        raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
+    if before_input:
+        selected = selection_range(s["target"])
+        actual = value(s["target"])
+        if (s.get("range") is None or selected != s["range"]
+                or selected != selection_range(s["target"])
+                or (s["before"] is not None and actual != s["before"])):
+            raise BridgeError("커서나 내용이 바뀌어 입력하지 않았어요. 전사문은 복구 파일에 보관했습니다.")
+    if (input_generation != s["activity"]
+            or AK.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() != s["pid"]):
+        raise BridgeError("입력 위치가 바뀌어 중단했습니다. 전사문은 복구 파일에 보관했습니다.")
+
+
+def expected_text(s, text):
+    """One optional final read can clear recovery; it never gates delivery."""
+    if s["before"] is None:
+        return None
+    original = s["before"].encode("utf-16-le")
+    location, length = s["range"]
+    if location < 0 or length < 0 or (location + length) * 2 > len(original):
+        raise BridgeError("커서 위치를 확인할 수 없어 입력하지 않았어요.")
+    try:
+        return (original[:location * 2] + text.encode("utf-16-le")
+                + original[(location + length) * 2:]).decode("utf-16-le")
+    except UnicodeDecodeError:
+        raise BridgeError("커서 위치를 확인할 수 없어 입력하지 않았어요.") from None
+
+
 def inject(text, s):
-    wait_for_target(s)
-    wait_modifiers()
-    wait_for_target(s)
     try:
         text = ipc.insertion_text(text)
     except ipc.ProtocolError:
         raise BridgeError("전사문에 입력할 수 없는 제어 문자가 있습니다.") from None
-    # Direct insertion only: no clipboard, Cmd+V, app activation or Return key.
     if not text.strip():
         raise BridgeError("인식된 음성이 없습니다.")
-    # Chromium can advertise writable AXSelectedText and return success without
-    # changing text. Keep one verified Unicode event path instead of probing writes.
-    current = dict(s)
-    chunks = list(unicode_chunks(text))
-    for index, chunk in enumerate(chunks):
-        wait_for_target(current, after_input=index > 0)
+    s = {**s, "activity": s.get("activity", input_generation)}
+    wait_modifiers()
+    check_input_keys()
+    ensure_input_target(s, before_input=True)
+    expected = expected_text(s, text)
+    # Unicode events only: no clipboard, whole-field setter, readback polling or retry.
+    for index, chunk in enumerate(unicode_chunks(text)):
+        if index:
+            time.sleep(0.01)
+        ensure_input_target(s)
         check_input_keys()
-        if "Secure" in attr(s["target"], "AXSubrole", ""):
-            raise BridgeError("암호 입력란에서는 사용할 수 없습니다.")
         encoded = chunk.encode("utf-16-le")
-        confirmed = insertion_result(current, chunk)
         for down in (True, False):
             event = Q.CGEventCreateKeyboardEvent(None, 0, down)
             Q.CGEventSetFlags(event, 0)
+            Q.CGEventSetIntegerValueField(event, Q.kCGEventSourceUserData, INPUT_EVENT_TAG)
             Q.CGEventKeyboardSetUnicodeString(event, len(encoded) // 2, chunk)
             Q.CGEventPost(Q.kCGHIDEventTap, event)
-        # Wait for acknowledgement before sending another chunk. Never keep typing
-        # after a same-field cursor move, inaccessible selection or rejected event.
-        verified = wait_for_target(confirmed, final=index == len(chunks) - 1, after_input=True)
-        current = confirmed
-    return current["before"] is not None and verified is not False
+    # A delayed or normalized AX value is not a failed insertion.
+    return expected is not None and value(s["target"]) in (expected, expected + "\n")
 
 
 def save_recovery(text):
@@ -630,7 +478,6 @@ def worker():
                     session = None
                     status("idle", "녹음을 취소했습니다.")
                 elif session is None:
-                    target = capture_target()
                     if cancel_requested.is_set():
                         raise EngineError("cancelled")
                     status("connecting")
@@ -640,13 +487,24 @@ def worker():
                         session = None
                         status("idle", "녹음을 취소했습니다.")
                     else:
-                        session = target
+                        session = True
                         status("recording")
                         beep("Tink")
                 else:
                     status("transcribing")
+                    # Anchor to the field selected at STOP, not at recording start.
+                    target_error = None
+                    try:
+                        target = capture_target()
+                    except Exception as error:
+                        target_error = error
+                    if cancel_requested.is_set():
+                        backend.cancel()
+                        session = None
+                        status("idle", "녹음을 취소했습니다.")
+                        continue
+                    # Always end recording, including when target capture failed.
                     text = backend.finish()
-                    s = session
                     session = None
                     if cancel_requested.is_set():
                         status("idle", "녹음을 취소했습니다.")
@@ -655,14 +513,14 @@ def worker():
                         raise BridgeError("인식된 음성이 없습니다.")
                     text = ipc.insertion_text(text)
                     save_recovery(text)
+                    if target_error is not None:
+                        raise target_error
                     status("inserting")
-                    verified = inject(text, s)
+                    verified = inject(text, target)
+                    status("idle", "입력 완료")
+                    beep("Pop")
                     if verified:
-                        status("idle", "입력 확인 완료")
-                        beep("Pop")
                         (BASE / "last-transcript.txt").unlink(missing_ok=True)
-                    else:
-                        status("sent", "입력 전송 완료 · 전사문 보관됨")
             except Exception as e:
                 if not isinstance(e, BridgeError):
                     logging.error("bridge failed type=%s", type(e).__name__)
@@ -675,8 +533,6 @@ def worker():
                 )
                 if cancel_requested.is_set():
                     status("idle", "녹음을 취소했습니다.")
-                elif isinstance(e, InputUnconfirmed):
-                    status("unconfirmed", msg)
                 else:
                     status("error", msg)
                     notify(msg)
@@ -711,7 +567,20 @@ def trigger(action="toggle"):
     ops.put(action)
 
 
+def note_input_activity():
+    global input_generation
+    with mutex:
+        input_generation += 1
+
+
+def mouse_click(x, y, button, pressed, injected=False):
+    if pressed:
+        note_input_activity()
+
+
 def intercept(kind, event):
+    if Q.CGEventGetIntegerValueField(event, Q.kCGEventSourceUserData) == INPUT_EVENT_TAG:
+        return event
     code = Q.CGEventGetIntegerValueField(event, Q.kCGKeyboardEventKeycode)
     flags = Q.CGEventGetFlags(event)
     match = code in HOTKEY_CODES and flags & CTRL and not flags & OTHER
@@ -728,6 +597,8 @@ def intercept(kind, event):
     if kind == Q.kCGEventKeyUp and code in pressed:
         pressed.discard(code)
         return None
+    if kind == Q.kCGEventKeyDown:
+        note_input_activity()
     return event
 
 
@@ -773,10 +644,13 @@ def main():
     listener = keyboard.Listener(darwin_intercept=intercept)
     listener.start()
     listener.wait()
+    pointer = mouse.Listener(on_click=mouse_click)
+    pointer.start()
+    pointer.wait()
     previous = None
     previous_hud = None
     try:
-        while listener.is_alive():
+        while listener.is_alive() and pointer.is_alive():
             if status_view != previous:
                 kind, detail = status_view
                 hud.update(kind, detail)
@@ -798,6 +672,8 @@ def main():
                 previous_hud = hud_state
             CF.CFRunLoopRunInMode(CF.kCFRunLoopDefaultMode, 0.1, False)
     finally:
+        listener.stop()
+        pointer.stop()
         backend.close()
     return 0
 

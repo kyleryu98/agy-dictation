@@ -66,6 +66,11 @@ Approve **ProListen Voice Engine's microphone request** when it appears. If the 
 
 Open a blank TextEdit document and click where you want to type. Press **Control + backtick** or **Control + backslash**, wait for the recording overlay, and speak. Press the same shortcut again to finish. The overlay should progress from recording to processing to completion. The tool does not press Enter or send your message.
 
+You can switch apps while recording. The destination is the field selected when
+you stop recording. After stopping, keep that field in place until input finishes;
+another click, keystroke or target change stops automatic input and keeps the
+transcript in the recovery file.
+
 On Korean keyboards, the shortcut is commonly labeled **Control + ₩**. The listener recognizes the physical grave/backtick and backslash keys; the location of the ₩ label varies by keyboard. The current overlay uses Korean text: `녹음 중` (recording), `글로 바꾸는 중` (transcribing), and `입력 완료` (inserted).
 
 ## Automatic startup

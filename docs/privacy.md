@@ -12,6 +12,12 @@ Avoiding the clipboard removes one path that could leave a transcript there. It 
 
 The default data directory is `~/Library/Application Support/ProListenDictation`; it can be changed with `AGY_DICTATION_DATA_DIR`. The external-editor callback delivers the transcript in `transcript.json`. Before insertion, the service writes `last-transcript.txt` and deletes it when the insertion result is confirmed in the target app. If insertion fails or cannot be verified, the transcript may remain in the recovery file; the user should delete it when it is no longer needed. The implementation checks file permissions of 0600, directory permissions of 0700, ownership, types, and links. It accepts only results with matching recording-session and single-use request identifiers, and cleans up exchange files on cancellation or error. It does not guarantee removal of all residual data after forced termination or power loss.
 
+Global key-down and mouse-press callbacks maintain only an in-memory activity
+counter, used to stop dictation if the user interacts during processing or input.
+Key contents, click coordinates and input history are not stored. Dictation's own
+tagged Unicode events do not increment this counter. A late text readback may leave
+the recovery file in place even after the completion HUD appears.
+
 These files are local runtime data and must not be included in the repository, issues, or distribution artifacts. The default log location is `~/Library/Logs/ProListenDictation`. Do not publish logs or attach their raw contents. The wrapper is designed to omit transcripts and raw exception messages from logs; status codes and exception types remain. The official CLI's own logs are separate and should not be published in raw form either.
 
 ## User consent and permissions

@@ -29,6 +29,7 @@ if sys.platform != "win32":
         "kCGEventFlagMaskShift": 8,
         "kCGEventKeyDown": 10,
         "kCGEventKeyUp": 11,
+        "kCGEventSourceUserData": 42,
     }.items():
         setattr(quartz, name, number)
     with patch.dict(
@@ -41,7 +42,7 @@ if sys.platform != "win32":
             "CoreFoundation": MagicMock(),
             "AVFoundation": MagicMock(),
             "objc": SimpleNamespace(autorelease_pool=nullcontext),
-            "pynput": SimpleNamespace(keyboard=MagicMock()),
+            "pynput": SimpleNamespace(keyboard=MagicMock(), mouse=MagicMock()),
         },
     ):
         hud = load_policy_module("hud")
@@ -59,11 +60,14 @@ class MacOSTests(unittest.TestCase):
         b.cancel_requested.clear()
         b.busy = False
         b.last_trigger = 0
+        b.input_generation = 0
         b.ops = queue.Queue()
 
     def test_changed_focus_never_injects(self):
         with (
-            patch.object(b, "wait_for_target", side_effect=b.BridgeError("changed")),
+            patch.object(b, "ensure_input_target", side_effect=b.BridgeError("changed")),
+            patch.object(b, "wait_modifiers"),
+            patch.object(b, "check_input_keys"),
             patch.object(b.Q, "CGEventPost") as post,
         ):
             with self.assertRaises(b.BridgeError):
@@ -178,35 +182,93 @@ class MacOSTests(unittest.TestCase):
             if isinstance(error, b.EngineError):
                 self.assertEqual(detail, ipc.ERRORS["trust_required"])
 
-    def test_worker_keeps_recovery_without_claiming_success_when_unconfirmed(self):
+    def run_worker_action(self, *, recording=True, capture=None, verified=False, finish_error=None):
         class StopWorker(BaseException):
             pass
 
-        for result in (False, b.InputUnconfirmed("확인 불가")):
-            with self.subTest(readable_text=result is not False):
-                fake_backend = Mock()
-                fake_backend.finish.return_value = "synthetic example"
-                b.session = {"target": "editor"}
-                with (
-                    patch.object(b, "backend", fake_backend),
-                    patch.object(b, "BASE", MagicMock()) as base,
-                    patch.object(b.ops, "get", side_effect=["toggle", StopWorker]),
-                    patch.object(b.ops, "task_done"),
-                    patch.object(b, "status") as status,
-                    patch.object(b, "beep") as beep,
-                    patch.object(b, "notify") as notify,
-                    patch.object(b, "save_recovery") as save,
-                    patch.object(b, "inject", side_effect=[result]),
-                ):
-                    with self.assertRaises(StopWorker):
-                        b.worker()
-                save.assert_called_once_with("synthetic example")
-                self.assertEqual(status.call_args.args[0], "sent" if result is False else "unconfirmed")
-                base.__truediv__.return_value.unlink.assert_not_called()
-                beep.assert_not_called()
-                notify.assert_not_called()
-                self.assertIsNone(b.session)
-                self.assertFalse(b.busy)
+        fake = SimpleNamespace(
+            backend=Mock(), capture=capture or Mock(return_value={"target": "new"}),
+            status=Mock(), save=Mock(), inject=Mock(return_value=verified),
+            beep=Mock(), notify=Mock(), base=MagicMock(),
+        )
+        fake.backend.finish.return_value = "synthetic example"
+        fake.backend.finish.side_effect = finish_error
+        b.session = {"target": "old"} if recording else None
+        with (
+            patch.object(b, "backend", fake.backend),
+            patch.object(b, "capture_target", fake.capture),
+            patch.object(b, "status", fake.status),
+            patch.object(b, "save_recovery", fake.save),
+            patch.object(b, "inject", fake.inject),
+            patch.object(b, "beep", fake.beep),
+            patch.object(b, "notify", fake.notify),
+            patch.object(b, "BASE", fake.base),
+            patch.object(b.ops, "get", side_effect=["toggle", StopWorker]),
+            patch.object(b.ops, "task_done"),
+        ):
+            with self.assertRaises(StopWorker):
+                b.worker()
+        return fake
+
+    def test_recording_can_begin_without_binding_an_input_field(self):
+        fake = self.run_worker_action(recording=False)
+        fake.capture.assert_not_called()
+        fake.backend.begin.assert_called_once()
+        fake.backend.finish.assert_not_called()
+        fake.inject.assert_not_called()
+        self.assertTrue(b.session)
+
+    def test_stop_uses_the_newly_selected_field(self):
+        fake = self.run_worker_action()
+        fake.capture.assert_called_once()
+        fake.backend.finish.assert_called_once()
+        fake.inject.assert_called_once_with("synthetic example", {"target": "new"})
+        fake.status.assert_called_with("idle", "입력 완료")
+        fake.base.__truediv__.return_value.unlink.assert_not_called()
+        fake.notify.assert_not_called()
+
+    def test_target_capture_failure_still_ends_recording_and_preserves_transcript(self):
+        fake = self.run_worker_action(capture=Mock(side_effect=b.BridgeError("no target")))
+        fake.backend.finish.assert_called_once()
+        fake.save.assert_called_once_with("synthetic example")
+        fake.inject.assert_not_called()
+        fake.status.assert_called_with("error", "no target")
+        self.assertIsNone(b.session)
+
+    def test_cancel_during_stop_capture_does_not_restart_provider_recording(self):
+        fake = self.run_worker_action(capture=Mock(side_effect=lambda: b.cancel_requested.set()))
+        fake.backend.cancel.assert_called_once()
+        fake.backend.finish.assert_not_called()
+        fake.inject.assert_not_called()
+        fake.save.assert_not_called()
+        self.assertIsNone(b.session)
+
+    def test_provider_finalization_failure_never_injects(self):
+        fake = self.run_worker_action(finish_error=b.BridgeError("provider failed"))
+        fake.inject.assert_not_called()
+        fake.save.assert_not_called()
+        self.assertIsNone(b.session)
+
+    def test_recovery_is_removed_only_for_an_exact_final_read(self):
+        fake = self.run_worker_action(verified=True)
+        fake.base.__truediv__.return_value.unlink.assert_called_once_with(missing_ok=True)
+
+    def test_own_tagged_events_do_not_count_as_user_input(self):
+        event = object()
+        with patch.object(b.Q, "CGEventGetIntegerValueField", return_value=b.INPUT_EVENT_TAG):
+            self.assertIs(b.intercept(b.Q.kCGEventKeyDown, event), event)
+        self.assertEqual(b.input_generation, 0)
+
+    def test_real_key_and_mouse_press_count_as_activity_but_releases_do_not(self):
+        with (
+            patch.object(b.Q, "CGEventGetIntegerValueField", return_value=0),
+            patch.object(b.Q, "CGEventGetFlags", return_value=0),
+        ):
+            b.intercept(b.Q.kCGEventKeyDown, object())
+            b.intercept(b.Q.kCGEventKeyUp, object())
+        b.mouse_click(0, 0, object(), True, False)
+        b.mouse_click(0, 0, object(), False)
+        self.assertEqual(b.input_generation, 2)
 
     def test_authenticated_shutdown_client_is_preserved(self):
         cli = b.CLI()
@@ -333,16 +395,6 @@ class MacOSTests(unittest.TestCase):
         self.assertFalse(presentation("recording")[2])
         self.assertIsNone(presentation("idle", "준비됨"))
 
-    def test_target_is_rechecked_after_waiting_for_modifiers(self):
-        with (
-            patch.object(b, "wait_for_target", side_effect=[None, b.BridgeError("changed")]),
-            patch.object(b, "wait_modifiers"),
-            patch.object(b.Q, "CGEventPost") as post,
-        ):
-            with self.assertRaises(b.BridgeError):
-                b.inject("safe text", {})
-            post.assert_not_called()
-
 
 @unittest.skipIf(sys.platform == "win32", "POSIX service policy")
 class FocusCompatibilityTests(unittest.TestCase):
@@ -350,6 +402,7 @@ class FocusCompatibilityTests(unittest.TestCase):
 
     def setUp(self):
         b.cancel_requested.clear()
+        b.input_generation = 0
         self.attrs = {}
         self.clock = 0.0
         for patcher in (
@@ -422,15 +475,16 @@ class FocusCompatibilityTests(unittest.TestCase):
     def test_keyboard_inserts_entire_sentence_once_preserving_neighbors(self):
         text = "한글과 English 😀 문장 끝까지 한 번에 입력합니다. " * 3
         with self.editor(delay=1.1) as (target, state, write, events):
-            self.assertTrue(b.inject(text, target))
+            self.assertFalse(b.inject(text, target))
         self.assertEqual(state["text"], "A" + text + "B")
         self.assertEqual("".join(state["writes"]), text)
         write.assert_not_called()
         self.assertEqual(events.call_count, 2 * len(state["writes"]))
+        self.assertLess(self.clock, .1)
 
-    def test_complete_delayed_input_is_confirmed_after_foreground_switch(self):
+    def test_complete_input_does_not_wait_for_readback_after_foreground_switch(self):
         with self.editor(delay=.2, switch_after_write=True) as (target, state, write, events):
-            self.assertTrue(b.inject("complete", target))
+            self.assertFalse(b.inject("complete", target))
         self.assertEqual(state["text"], "AcompleteB")
         write.assert_not_called()
         self.assertEqual(events.call_count, 2)
@@ -461,7 +515,7 @@ class FocusCompatibilityTests(unittest.TestCase):
         self.assertEqual(events.call_count, 2 * len(state["writes"]))
         write.assert_not_called()
 
-    def test_partial_text_readback_only_accepts_prefixes_of_our_own_input(self):
+    def test_partial_text_readback_does_not_interrupt_delivery(self):
         text = "123456789012345 다음 문장 끝까지 확인합니다."
         with self.editor(before="", selected=(0, 0)) as (target, state, write, events):
             with patch.object(b, "value", side_effect=lambda _: text[:5] if state["writes"] else ""):
@@ -470,28 +524,8 @@ class FocusCompatibilityTests(unittest.TestCase):
         self.assertEqual("".join(state["writes"]), text)
         write.assert_not_called()
 
-    def test_stale_readback_requires_matching_caret_before_more_input(self):
-        with self.editor() as (target, state, write, events):
-            with (
-                patch.object(b, "value", return_value=target["before"]),
-                patch.object(b, "selection_range", return_value=target["range"]),
-            ):
-                with self.assertRaises(b.BridgeError):
-                    b.inject("x" * 40, target)
-        self.assertEqual(state["writes"], ["x" * 16])
-        self.assertEqual(events.call_count, 2)
-        write.assert_not_called()
 
-    def test_unrelated_text_change_cannot_use_cursor_only_acknowledgement(self):
-        with self.editor() as (target, state, write, events):
-            with patch.object(b, "value", side_effect=lambda _: "changed baseline" if state["writes"] else target["before"]):
-                with self.assertRaises(b.BridgeError):
-                    b.inject("x" * 40, target)
-        self.assertEqual(state["writes"], ["x" * 16])
-        self.assertEqual(events.call_count, 2)
-        write.assert_not_called()
-
-    def test_cursor_ack_is_not_available_before_first_write(self):
+    def test_changed_text_before_first_write_is_rejected(self):
         with self.editor() as (target, state, write, events):
             with patch.object(b, "value", return_value=""):
                 with self.assertRaises(b.BridgeError):
@@ -500,15 +534,8 @@ class FocusCompatibilityTests(unittest.TestCase):
         events.assert_not_called()
         write.assert_not_called()
 
-    def test_missing_preserved_suffix_is_not_mistaken_for_readback_lag(self):
-        with self.editor() as (target, state, write, events):
-            with patch.object(b, "value", side_effect=lambda _: state["text"][:-1] if state["writes"] else target["before"]):
-                with self.assertRaises(b.BridgeError):
-                    b.inject("x" * 40, target)
-        self.assertEqual(state["writes"], ["x" * 16])
-        self.assertEqual(events.call_count, 2)
 
-    def test_completed_cursor_ack_survives_app_switch_without_false_failure(self):
+    def test_completed_delivery_survives_app_switch_without_false_failure(self):
         with self.editor(switch_after_write=True) as (target, state, write, events):
             with patch.object(b, "value", return_value=target["before"]):
                 self.assertFalse(b.inject("complete", target))
@@ -526,10 +553,9 @@ class FocusCompatibilityTests(unittest.TestCase):
         write.assert_not_called()
         self.assertEqual(events.call_count, 2)
 
-    def test_final_text_mismatch_is_unconfirmed_without_retry(self):
+    def test_final_text_mismatch_retains_recovery_without_retry(self):
         with self.editor(delivered_suffix="unexpected") as (target, state, write, events):
-            with self.assertRaises(b.InputUnconfirmed):
-                b.inject("complete", target)
+            self.assertFalse(b.inject("complete", target))
         self.assertEqual(state["text"], "AcompleteunexpectedB")
         write.assert_not_called()
         self.assertEqual(events.call_count, 2)
@@ -538,12 +564,10 @@ class FocusCompatibilityTests(unittest.TestCase):
         with self.editor() as (target, state, write, events):
             events.side_effect = None
             with patch.object(b, "logging") as log:
-                with self.assertRaises(b.InputUnconfirmed) as caught:
-                    b.inject("PRIVATE CONTENT", target)
+                self.assertFalse(b.inject("PRIVATE CONTENT", target))
         self.assertEqual((state["text"], state["range"]), ("A😀B", (1, 2)))
         write.assert_not_called()
         self.assertEqual(events.call_count, 2)
-        self.assertNotIn("PRIVATE CONTENT", str(caught.exception))
         self.assertNotIn("PRIVATE CONTENT", str(log.mock_calls))
 
     def test_changed_cursor_before_input_preserves_selected_text(self):
@@ -584,21 +608,77 @@ class FocusCompatibilityTests(unittest.TestCase):
         self.assertEqual(events.call_count, 2)
         write.assert_not_called()
 
-    def test_added_newline_does_not_bypass_intermediate_cursor_ack(self):
+    def test_stale_caret_echo_does_not_interrupt_our_own_input(self):
         with self.editor(native=False, terminal_newline=True) as (target, state, write, events):
             with patch.object(b, "selection_range", return_value=target["range"]):
+                self.assertTrue(b.inject("x" * 40, target))
+        self.assertEqual("".join(state["writes"]), "x" * 40)
+        self.assertEqual(events.call_count, 6)
+        write.assert_not_called()
+
+    def test_user_activity_during_transcription_prevents_any_input(self):
+        with self.editor() as (target, state, write, events):
+            target["activity"] = b.input_generation
+            b.note_input_activity()
+            with self.assertRaises(b.BridgeError):
+                b.inject("new text", target)
+        self.assertEqual(state["text"], "A😀B")
+        events.assert_not_called()
+
+    def test_user_activity_during_focus_check_never_posts_input(self):
+        with self.editor() as (target, state, write, events):
+            def focus(_):
+                b.note_input_activity()
+                return "editor"
+            with patch.object(b, "focused_input", side_effect=focus):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("new text", target)
+        self.assertEqual(state["text"], "A😀B")
+        events.assert_not_called()
+
+    def test_user_click_or_key_during_delivery_stops_remaining_chunks(self):
+        for mouse in (False, True):
+            with self.subTest(mouse=mouse):
+                with self.editor() as (target, state, write, events):
+                    post = events.side_effect
+                    def interrupt(tap, down):
+                        post(tap, down)
+                        if down:
+                            if mouse:
+                                b.mouse_click(0, 0, None, True)
+                            else:
+                                b.note_input_activity()
+                    events.side_effect = interrupt
+                    with self.assertRaises(b.BridgeError):
+                        b.inject("x" * 40, target)
+                self.assertEqual(state["writes"], ["x" * 16])
+                self.assertEqual(events.call_count, 2)
+
+    def test_field_change_without_user_input_stops_remaining_chunks(self):
+        with self.editor() as (target, state, write, events):
+            with patch.object(b, "focused_input", side_effect=lambda _: "other" if state["writes"] else "editor"):
                 with self.assertRaises(b.BridgeError):
                     b.inject("x" * 40, target)
         self.assertEqual(state["writes"], ["x" * 16])
         self.assertEqual(events.call_count, 2)
-        write.assert_not_called()
 
-    def test_final_verification_reads_original_field_not_new_foreground(self):
-        target = {"target": "original", "before": "complete"}
-        with patch.object(b, "value", side_effect=lambda el: "complet" if el == "original" else "complete") as read:
-            with self.assertRaises(b.InputUnconfirmed):
-                b.wait_for_target(target, final=True, after_input=True)
-        self.assertTrue(all(call.args == ("original",) for call in read.call_args_list))
+    def test_text_and_selection_reads_do_not_grow_with_sentence_length(self):
+        for size in (16, 1600):
+            with self.subTest(size=size), self.editor() as (target, state, write, events):
+                read = b.value
+                selected = b.selection_range
+                self.assertTrue(b.inject("x" * size, target))
+                self.assertEqual(read.call_count, 2)
+                self.assertEqual(selected.call_count, 2)
+                self.assertTrue(all(call.args[2] == b.INPUT_EVENT_TAG for call in b.Q.CGEventSetIntegerValueField.call_args_list))
+
+    def test_torn_initial_selection_never_posts_input(self):
+        with self.editor() as (target, state, write, events):
+            with patch.object(b, "selection_range", side_effect=[target["range"], (0, 0)]):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("new text", target)
+        events.assert_not_called()
+
 
     def test_out_of_bounds_selection_never_attempts_input(self):
         with self.editor(selected=(1, 20)) as (target, state, write, events):
@@ -608,41 +688,6 @@ class FocusCompatibilityTests(unittest.TestCase):
         write.assert_not_called()
         events.assert_not_called()
 
-    def test_full_range_read_avoids_synthetic_newline_in_ax_value(self):
-        self.attrs[("editor", "AXValue")] = "A😀B\n"
-        self.attrs[("editor", "AXNumberOfCharacters")] = 4
-        with (
-            patch.object(b.AX, "AXValueCreate", return_value="range") as create,
-            patch.object(b.AX, "AXUIElementCopyParameterizedAttributeValue", return_value=(0, "A😀B")) as read,
-        ):
-            self.assertEqual(b.value("editor"), "A😀B")
-        create.assert_called_once_with(b.AX.kAXValueCFRangeType, (0, 4))
-        read.assert_called_once_with("editor", "AXStringForRange", "range", None)
-
-    def test_invalid_or_unsupported_range_read_falls_back_to_ax_value(self):
-        self.attrs[("editor", "AXValue")] = "original"
-        self.attrs[("editor", "AXNumberOfCharacters")] = 8
-        for result in ((-25205, None), (0, "partial"), (0, None)):
-            with patch.object(b.AX, "AXUIElementCopyParameterizedAttributeValue", return_value=result):
-                self.assertEqual(b.value("editor"), "original")
-
-    def test_changing_character_count_does_not_accept_torn_range_read(self):
-        with (
-            patch.object(b, "attr", side_effect=[4, 8, "original"]),
-            patch.object(b.AX, "AXUIElementCopyParameterizedAttributeValue", return_value=(0, "A😀B")),
-        ):
-            self.assertEqual(b.value("editor"), "original")
-
-    def test_only_added_terminal_newline_is_tolerated_after_writing(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "complete", "range": (8, 0)}
-        for actual in ("complet", "complete ", "complete\n\n", "com\nplete"):
-            with patch.object(b, "value", return_value=actual):
-                self.assertNotEqual(b.target_state(target, final=True), "confirmed")
-        with patch.object(b, "value", return_value="complete\n"):
-            self.assertEqual(b.target_state(target, final=True), "confirmed")
-        # Do not hide the loss of an existing real newline.
-        with patch.object(b, "value", return_value="complete"):
-            self.assertNotEqual(b.target_state({**target, "before": "complete\n"}, final=True), "confirmed")
 
     def test_focus_chain_across_web_area_and_frame(self):
         self.attrs.update({
@@ -832,146 +877,8 @@ class FocusCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(b.BridgeError, "커서 위치"):
                 b.capture_target()
 
-    def test_unicode_selection_replacement_is_acknowledged(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "A😀B", "range": (1, 2)}
-        snapshots = []
 
-        def unchanged(snapshot):
-            snapshots.append(dict(snapshot))
-            return True
-
-        with (
-            patch.object(b, "wait_for_target", side_effect=lambda snapshot, **kwargs: unchanged(snapshot)),
-            patch.object(b, "wait_modifiers"),
-            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
-            patch.object(b.Q, "CGEventPost") as post,
-        ):
-            self.assertTrue(b.inject("한😀", target))
-        self.assertEqual(post.call_count, 2)
-        self.assertEqual(snapshots[-1]["before"], "A한😀B")
-        self.assertEqual(snapshots[-1]["range"], (4, 0))
-
-    def test_cursor_loss_after_first_chunk_stops_remaining_input(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "", "range": (0, 0)}
-        kit = MagicMock()
-        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
-        with (
-            patch.object(b, "AK", kit),
-            patch.object(b, "wait_for_target", side_effect=[
-                None, None, None, b.BridgeError("커서 위치 확인 실패")
-            ]),
-            patch.object(b, "wait_modifiers"),
-            patch.object(b, "focused_input", return_value="editor"),
-            patch.object(b, "selection_range", return_value=None),
-            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
-            patch.object(b.Q, "CGEventPost") as post,
-        ):
-            with self.assertRaisesRegex(b.BridgeError, "커서 위치"):
-                b.inject("x" * 32, target)
-        self.assertEqual(post.call_count, 2)
-
-    def test_delayed_incremental_browser_updates_do_not_truncate_or_duplicate(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "leftRIGHT", "range": (4, 0)}
-        message = "한글과 English 😀 입력을 앱 전환 직후에도 끝까지 확인합니다."
-        pending = {}
-        delivered = []
-        payload = [""]
-        kit = MagicMock()
-        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
-
-        def view():
-            if not pending:
-                return target["before"], target["range"]
-            elapsed = self.clock - pending["time"]
-            chunk = pending["chunk"]
-            # First input after activation takes over the old 0.8s deadline.
-            ready = 1.1 if len(delivered) == 1 else 0.14
-            prefix = chunk if elapsed >= ready else chunk[:len(chunk) // 2]
-            encoded = prefix.encode("utf-16-le")
-            original = pending["before"].encode("utf-16-le")
-            location, length = pending["range"]
-            text = (original[:location * 2] + encoded + original[(location + length) * 2:]).decode("utf-16-le")
-            selected = None if elapsed < 0.04 else (location + len(encoded) // 2, 0)
-            return text, selected
-
-        def post(down):
-            if down:
-                before, selected = view()
-                pending.update(time=self.clock, before=before, range=selected, chunk=payload[0])
-                delivered.append(payload[0])
-
-        def focus(_):
-            elapsed = self.clock - pending["time"] if pending else 10
-            return None if 0.01 < elapsed < 0.03 else "editor"
-
-        with (
-            patch.object(b, "AK", kit),
-            patch.object(b, "focused_input", side_effect=focus),
-            patch.object(b, "selection_range", side_effect=lambda _: view()[1]),
-            patch.object(b, "value", side_effect=lambda _: view()[0]),
-            patch.object(b, "wait_modifiers"),
-            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
-            patch.object(b.Q, "CGEventCreateKeyboardEvent", side_effect=lambda a, c, down: down),
-            patch.object(b.Q, "CGEventKeyboardSetUnicodeString", side_effect=lambda e, n, t: payload.__setitem__(0, t)),
-            patch.object(b.Q, "CGEventPost", side_effect=lambda tap, event: post(event)) as send,
-        ):
-            self.assertTrue(b.inject(message, target))
-        self.assertEqual("".join(delivered), message)
-        self.assertEqual(view()[0], "left" + message + "RIGHT")
-        self.assertEqual(send.call_count, 2 * len(delivered))
-
-    def test_final_full_text_proof_does_not_require_late_caret_ack(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "complete", "range": (8, 0)}
-        kit = MagicMock()
-        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
-        with (
-            patch.object(b, "AK", kit),
-            patch.object(b, "focused_input", return_value="editor"),
-            patch.object(b, "selection_range", return_value=None),
-            patch.object(b, "value", return_value="complete"),
-        ):
-            self.assertEqual(b.target_state(target), "selection_unavailable")
-            b.wait_for_target(target, final=True)
-            with self.assertRaises(b.BridgeError):
-                b.wait_for_target(target, final=False)
-
-    def test_real_app_or_field_switch_stops_without_waiting(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "", "range": (0, 0)}
-        for reason in ("app_changed", "target_changed", "secure"):
-            started = self.clock
-            with patch.object(b, "target_state", return_value=reason):
-                with self.assertRaises(b.BridgeError):
-                    b.wait_for_target(target)
-            self.assertEqual(self.clock, started)
-
-    def test_persistent_missing_ack_never_sends_second_chunk(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "", "range": (0, 0)}
-        posted = []
-        with (
-            patch.object(b, "target_state", side_effect=lambda *a, **kw: "selection_unavailable" if posted else "confirmed"),
-            patch.object(b, "wait_modifiers"),
-            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
-            patch.object(b.Q, "CGEventPost", side_effect=lambda *args: posted.append(True)),
-            patch.object(b, "logging") as log,
-        ):
-            with self.assertRaises(b.BridgeError):
-                b.inject("sensitive synthetic sample" * 2, target)
-        self.assertEqual(len(posted), 2)
-        self.assertNotIn("sensitive synthetic sample", str(log.mock_calls))
-
-    def test_torn_range_snapshot_does_not_authorize_insertion(self):
-        target = {"pid": 123, "root": "app", "target": "editor", "before": "hello", "range": (5, 0)}
-        kit = MagicMock()
-        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
-        with (
-            patch.object(b, "AK", kit),
-            patch.object(b, "focused_input", return_value="editor"),
-            patch.object(b, "value", return_value="hello"),
-            patch.object(b, "selection_range", side_effect=[(2, 0), (5, 0)]),
-        ):
-            self.assertEqual(b.target_state(target), "selection_updating")
-
-    def test_capture_waits_for_first_cursor_snapshot_to_settle(self):
+    def test_capture_returns_as_soon_as_cursor_is_available(self):
         kit = MagicMock()
         kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.return_value = 123
         with (
@@ -983,7 +890,7 @@ class FocusCompatibilityTests(unittest.TestCase):
             patch.object(b, "request_accessibility"),
         ):
             self.assertEqual(b.capture_target()["range"], (0, 0))
-        self.assertGreaterEqual(self.clock, .24)
+        self.assertAlmostEqual(self.clock, .16)
 
     def test_emoji_payloads_respect_utf16_event_budget(self):
         text = "😀" * 30 + "한글"
@@ -993,27 +900,4 @@ class FocusCompatibilityTests(unittest.TestCase):
 
     def test_partial_input_hud_does_not_claim_nothing_was_inserted(self):
         title = presentation("error", "일부만 입력됐을 수 있어요.")[0]
-        self.assertEqual(title, "입력을 완료하지 못했어요")
-
-    def test_unconfirmed_input_hud_does_not_claim_success_or_failed_delivery(self):
-        title, detail, busy, color = presentation("unconfirmed")
-        self.assertEqual(title, "입력 확인이 필요해요")
-        self.assertIn("복구문", detail)
-        self.assertFalse(busy)
-        self.assertEqual(color, "orange")
-
-    def test_sent_with_lagging_readback_is_not_presented_as_failed_input(self):
-        title, _, busy, color = presentation("sent")
-        self.assertEqual(title, "입력 전송 완료")
-        self.assertFalse(busy)
-        self.assertEqual(color, "gray")
-
-    def test_text_mismatch_diagnostics_return_codes_without_contents(self):
-        for expected, actual, code in (
-            ("sample value", "sample\u00a0value", "nbsp"),
-            ("sample\n", "sample", "trailing_newline"),
-            (" sample ", "sample", "outer_whitespace"),
-            ("sample value", "sample", "prefix"),
-            ("sample", "different", "different"),
-        ):
-            self.assertEqual(b.text_relation(expected, actual), code)
+        self.assertEqual(title, "입력이 중단됐어요")
