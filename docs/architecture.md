@@ -9,7 +9,8 @@ Global hotkey → macOS service / state control → Official AGY CLI in a PTY
                          ↑                               ↓
                   Processing result ← External-editor callback
                          ↓
-               Native Unicode input events
+           Native selected-text insertion
+             or Unicode input events
                          ↓
                 Current app's input position
 ```
@@ -43,6 +44,32 @@ The service and voice engine communicate through a local Unix socket. This trans
 - Verify that retrieving a transcript does not submit it as a regular CLI agent prompt.
 
 These are validation requirements, not evidence that the rebuilt repository meets them all. Sending input events alone does not prove that the target app accepted the text; verify the visible result as well.
+
+## Input acknowledgement
+
+When an editable target exposes a writable `AXSelectedText` and readable text,
+the service verifies the captured selection and replaces it with the entire
+transcript in one operation. It never sets the whole field's `AXValue`. Unsupported
+targets retain bounded Unicode keyboard chunks. Capability is checked before any
+write; an attempted native write is never retried through keyboard events, even if
+AX returns an error, because the write may already have taken effect.
+
+Text reads prefer `AXStringForRange` with a stable character count and matching
+UTF-16 length, then fall back to `AXValue`. After writing, a single extra terminal
+newline in the exposed value is tolerated. Missing text, missing spaces or existing
+newlines, and internal line-break changes are not normalized away. Before any
+subsequent keyboard chunk, both the original field's text and its caret must be
+acknowledged while that field remains focused.
+
+After the final write there are no more characters to send. Completion checks the
+captured field directly, so switching to another app does not invalidate text that
+has already arrived. An unconfirmed final write keeps the recovery transcript and
+shows an uncertainty HUD, without a success sound, retry, or claim that insertion
+definitely failed. This acknowledgement timeout is separate from provider
+transcription finalization.
+
+API references: Apple's [text range attribute](https://developer.apple.com/documentation/applicationservices/kaxstringforrangeparameterizedattribute)
+and [Unicode keyboard event documentation](https://developer.apple.com/documentation/coregraphics/cgevent/keyboardsetunicodestring(stringlength:unicodestring:)).
 
 ## Packaging boundaries
 

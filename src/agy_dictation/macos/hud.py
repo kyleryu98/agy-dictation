@@ -19,6 +19,8 @@ def presentation(kind, detail=""):
         return ("취소 중", "입력하지 않고 녹음을 마쳐요", True, "gray")
     if kind == "inserting":
         return ("입력 중", "현재 커서에 넣고 있어요", True, "blue")
+    if kind == "unconfirmed":
+        return ("입력 확인이 필요해요", "입력칸을 확인해 주세요 · 복구문 보관됨", False, "orange")
     if kind == "error":
         title = "입력을 완료하지 못했어요" if "일부만" in detail else "입력하지 못했어요"
         return (title, detail, False, "orange")
@@ -156,7 +158,9 @@ class DictationHUD:
         if kind == "recording" and previous != "recording":
             self.started = time.monotonic()
         self.dismiss_at = (
-            None if kind in ACTIVE else time.monotonic() + (6 if kind == "error" else 0.85)
+            None if kind in ACTIVE else time.monotonic() + (
+                6 if kind in {"error", "unconfirmed"} else 0.85
+            )
         )
         if not self.visible:
             screen = A.NSScreen.mainScreen()

@@ -3,7 +3,7 @@ import queue
 import sys
 import threading
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -178,6 +178,36 @@ class MacOSTests(unittest.TestCase):
             if isinstance(error, b.EngineError):
                 self.assertEqual(detail, ipc.ERRORS["trust_required"])
 
+    def test_worker_keeps_recovery_without_claiming_success_when_unconfirmed(self):
+        class StopWorker(BaseException):
+            pass
+
+        for result in (False, b.InputUnconfirmed("확인 불가")):
+            with self.subTest(readable_text=result is not False):
+                fake_backend = Mock()
+                fake_backend.finish.return_value = "synthetic example"
+                b.session = {"target": "editor"}
+                with (
+                    patch.object(b, "backend", fake_backend),
+                    patch.object(b, "BASE", MagicMock()) as base,
+                    patch.object(b.ops, "get", side_effect=["toggle", StopWorker]),
+                    patch.object(b.ops, "task_done"),
+                    patch.object(b, "status") as status,
+                    patch.object(b, "beep") as beep,
+                    patch.object(b, "notify") as notify,
+                    patch.object(b, "save_recovery") as save,
+                    patch.object(b, "inject", side_effect=[result]),
+                ):
+                    with self.assertRaises(StopWorker):
+                        b.worker()
+                save.assert_called_once_with("synthetic example")
+                self.assertEqual(status.call_args.args[0], "unconfirmed")
+                base.__truediv__.return_value.unlink.assert_not_called()
+                beep.assert_not_called()
+                notify.assert_not_called()
+                self.assertIsNone(b.session)
+                self.assertFalse(b.busy)
+
     def test_authenticated_shutdown_client_is_preserved(self):
         cli = b.CLI()
         with patch.object(cli, "request", return_value="") as request:
@@ -338,6 +368,222 @@ class FocusCompatibilityTests(unittest.TestCase):
 
     def read_attribute(self, el, key, default=None):
         return self.attrs.get((el, key), default)
+
+    @contextmanager
+    def editor(self, before="A😀B", selected=(1, 2), *, native=True,
+               delay=0, terminal_newline=False, switch_after_write=False,
+               delivered_suffix="", write_error=0):
+        """Independent UTF-16 editor; every native operation remains mocked."""
+        target = {"pid": 123, "root": "app", "target": "editor",
+                  "before": before, "range": selected}
+        state = {"text": before, "range": selected, "writes": [], "pid": 123}
+        payload = [""]
+        kit = MagicMock()
+        kit.NSWorkspace.sharedWorkspace.return_value.frontmostApplication.return_value.processIdentifier.side_effect = lambda: state["pid"]
+
+        def read(_):
+            if state["writes"] and self.clock - state["at"] < delay:
+                return state["old"]
+            return state["text"] + ("\n" if terminal_newline and state["writes"] else "")
+
+        def replace(text):
+            location, length = state["range"]
+            encoded = state["text"].encode("utf-16-le")
+            state["old"] = state["text"]
+            state["text"] = (
+                encoded[:2 * location] + (text + delivered_suffix).encode("utf-16-le")
+                + encoded[2 * (location + length):]
+            ).decode("utf-16-le")
+            state["range"] = (location + len(text.encode("utf-16-le")) // 2, 0)
+            state["at"] = self.clock
+            state["writes"].append(text)
+            if switch_after_write:
+                state["pid"] = 456
+
+        def set_selected(el, attribute, text):
+            self.assertEqual((el, attribute), ("editor", "AXSelectedText"))
+            replace(text)
+            return write_error
+
+        def post(_, down):
+            if down:
+                replace(payload[0])
+
+        with (
+            patch.object(b, "AK", kit),
+            patch.object(b, "focused_input", return_value="editor"),
+            patch.object(b, "value", side_effect=read),
+            patch.object(b, "selection_range", side_effect=lambda _: state["range"]),
+            patch.object(b, "wait_modifiers"),
+            patch.object(b.AX, "AXUIElementIsAttributeSettable", return_value=(0, native)),
+            patch.object(b.AX, "AXUIElementSetAttributeValue", side_effect=set_selected) as write,
+            patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
+            patch.object(b.Q, "CGEventCreateKeyboardEvent", side_effect=lambda a, c, down: down),
+            patch.object(b.Q, "CGEventKeyboardSetUnicodeString", side_effect=lambda e, n, t: payload.__setitem__(0, t)),
+            patch.object(b.Q, "CGEventPost", side_effect=post) as events,
+        ):
+            yield target, state, write, events
+
+    def test_native_selection_inserts_entire_sentence_once_preserving_neighbors(self):
+        text = "한글과 English 😀 문장 끝까지 한 번에 입력합니다. " * 3
+        with self.editor(delay=1.1) as (target, state, write, events):
+            self.assertTrue(b.inject(text, target))
+        self.assertEqual(state["text"], "A" + text + "B")
+        write.assert_called_once_with("editor", "AXSelectedText", text)
+        events.assert_not_called()
+
+    def test_complete_native_input_is_confirmed_after_foreground_switch(self):
+        with self.editor(delay=.2, switch_after_write=True) as (target, state, write, events):
+            self.assertTrue(b.inject("complete", target))
+        self.assertEqual(state["text"], "AcompleteB")
+        write.assert_called_once()
+        events.assert_not_called()
+
+    def test_final_keyboard_input_is_confirmed_after_foreground_switch(self):
+        with self.editor(native=False, switch_after_write=True) as (target, state, write, events):
+            self.assertTrue(b.inject("complete", target))
+        self.assertEqual(state["text"], "AcompleteB")
+        write.assert_not_called()
+        self.assertEqual(events.call_count, 2)
+
+    def test_app_added_terminal_newline_does_not_stop_remaining_keyboard_chunks(self):
+        text = "한국어 English 😀 마지막 문장까지 입력합니다. " * 2
+        with self.editor(native=False, terminal_newline=True) as (target, state, write, events):
+            self.assertTrue(b.inject(text, target))
+        self.assertEqual(state["text"], "A" + text + "B")
+        self.assertEqual("".join(state["writes"]), text)
+        write.assert_not_called()
+        self.assertGreater(events.call_count, 2)
+
+    def test_native_write_error_never_triggers_duplicate_keyboard_fallback(self):
+        # AX can report CannotComplete even when the application accepted the write.
+        with self.editor(write_error=-25204) as (target, state, write, events):
+            self.assertTrue(b.inject("complete", target))
+        self.assertEqual(state["text"], "AcompleteB")
+        write.assert_called_once()
+        events.assert_not_called()
+
+    def test_native_mismatch_is_unconfirmed_without_retry_or_keyboard_fallback(self):
+        with self.editor(delivered_suffix="unexpected") as (target, state, write, events):
+            with self.assertRaises(b.InputUnconfirmed):
+                b.inject("complete", target)
+        self.assertEqual(state["text"], "AcompleteunexpectedB")
+        write.assert_called_once()
+        events.assert_not_called()
+
+    def test_rejected_native_write_does_not_delete_selection_or_fall_back(self):
+        for error in (-25204, RuntimeError("PRIVATE CONTENT")):
+            with self.subTest(error=type(error).__name__):
+                with self.editor() as (target, state, write, events):
+                    write.side_effect = error if isinstance(error, Exception) else None
+                    write.return_value = error
+                    with patch.object(b, "logging") as log:
+                        with self.assertRaises(b.InputUnconfirmed) as caught:
+                            b.inject("new text", target)
+                self.assertEqual((state["text"], state["range"]), ("A😀B", (1, 2)))
+                write.assert_called_once()
+                events.assert_not_called()
+                self.assertNotIn("PRIVATE CONTENT", str(caught.exception))
+                self.assertNotIn("PRIVATE CONTENT", str(log.mock_calls))
+
+    def test_changed_cursor_before_native_write_preserves_selected_text(self):
+        with self.editor() as (target, state, write, events):
+            def capability(*_):
+                state["range"] = (0, 1)
+                return 0, True
+
+            with patch.object(b.AX, "AXUIElementIsAttributeSettable", side_effect=capability):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("new text", target)
+        self.assertEqual(state["text"], "A😀B")
+        write.assert_not_called()
+        events.assert_not_called()
+
+    def test_modifier_or_cancel_before_native_write_preserves_selected_text(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                with self.editor() as (target, state, write, events):
+                    def flags(_):
+                        if cancel:
+                            b.cancel_requested.set()
+                        return b.CTRL
+
+                    with patch.object(b.Q, "CGEventSourceFlagsState", side_effect=flags):
+                        with self.assertRaises(b.BridgeError):
+                            b.inject("new text", target)
+                b.cancel_requested.clear()
+                self.assertEqual(state["text"], "A😀B")
+                write.assert_not_called()
+                events.assert_not_called()
+
+    def test_keyboard_switch_mid_sentence_still_stops_all_remaining_writes(self):
+        with self.editor(native=False, switch_after_write=True) as (target, state, write, events):
+            with self.assertRaises(b.BridgeError):
+                b.inject("x" * 40, target)
+        self.assertEqual(state["text"], "A" + "x" * 16 + "B")
+        self.assertEqual(state["writes"], ["x" * 16])
+        self.assertEqual(events.call_count, 2)
+        write.assert_not_called()
+
+    def test_added_newline_does_not_bypass_intermediate_cursor_ack(self):
+        with self.editor(native=False, terminal_newline=True) as (target, state, write, events):
+            with patch.object(b, "selection_range", return_value=target["range"]):
+                with self.assertRaises(b.BridgeError):
+                    b.inject("x" * 40, target)
+        self.assertEqual(state["writes"], ["x" * 16])
+        self.assertEqual(events.call_count, 2)
+        write.assert_not_called()
+
+    def test_final_verification_reads_original_field_not_new_foreground(self):
+        target = {"target": "original", "before": "complete"}
+        with patch.object(b, "value", side_effect=lambda el: "complet" if el == "original" else "complete") as read:
+            with self.assertRaises(b.InputUnconfirmed):
+                b.wait_for_target(target, final=True, after_input=True)
+        self.assertTrue(all(call.args == ("original",) for call in read.call_args_list))
+
+    def test_out_of_bounds_selection_never_attempts_native_write(self):
+        with self.editor(selected=(1, 20)) as (target, state, write, events):
+            with self.assertRaises(b.BridgeError):
+                b.inject("new text", target)
+        self.assertEqual(state["text"], "A😀B")
+        write.assert_not_called()
+        events.assert_not_called()
+
+    def test_full_range_read_avoids_synthetic_newline_in_ax_value(self):
+        self.attrs[("editor", "AXValue")] = "A😀B\n"
+        self.attrs[("editor", "AXNumberOfCharacters")] = 4
+        with (
+            patch.object(b.AX, "AXValueCreate", return_value="range") as create,
+            patch.object(b.AX, "AXUIElementCopyParameterizedAttributeValue", return_value=(0, "A😀B")) as read,
+        ):
+            self.assertEqual(b.value("editor"), "A😀B")
+        create.assert_called_once_with(b.AX.kAXValueCFRangeType, (0, 4))
+        read.assert_called_once_with("editor", "AXStringForRange", "range", None)
+
+    def test_invalid_or_unsupported_range_read_falls_back_to_ax_value(self):
+        self.attrs[("editor", "AXValue")] = "original"
+        self.attrs[("editor", "AXNumberOfCharacters")] = 8
+        for result in ((-25205, None), (0, "partial"), (0, None)):
+            with patch.object(b.AX, "AXUIElementCopyParameterizedAttributeValue", return_value=result):
+                self.assertEqual(b.value("editor"), "original")
+
+    def test_changing_character_count_does_not_accept_torn_range_read(self):
+        with (
+            patch.object(b, "attr", side_effect=[4, 8, "original"]),
+            patch.object(b.AX, "AXUIElementCopyParameterizedAttributeValue", return_value=(0, "A😀B")),
+        ):
+            self.assertEqual(b.value("editor"), "original")
+
+    def test_only_added_terminal_newline_is_tolerated_after_writing(self):
+        target = {"pid": 123, "root": "app", "target": "editor", "before": "complete", "range": (8, 0)}
+        for actual in ("complet", "complete ", "complete\n\n", "com\nplete"):
+            with patch.object(b, "value", return_value=actual):
+                self.assertNotEqual(b.target_state(target, final=True), "confirmed")
+        with patch.object(b, "value", return_value="complete\n"):
+            self.assertEqual(b.target_state(target, final=True), "confirmed")
+        # Do not hide the loss of an existing real newline.
+        with patch.object(b, "value", return_value="complete"):
+            self.assertNotEqual(b.target_state({**target, "before": "complete\n"}, final=True), "confirmed")
 
     def test_focus_chain_across_web_area_and_frame(self):
         self.attrs.update({
@@ -689,6 +935,13 @@ class FocusCompatibilityTests(unittest.TestCase):
     def test_partial_input_hud_does_not_claim_nothing_was_inserted(self):
         title = presentation("error", "일부만 입력됐을 수 있어요.")[0]
         self.assertEqual(title, "입력을 완료하지 못했어요")
+
+    def test_unconfirmed_input_hud_does_not_claim_success_or_failed_delivery(self):
+        title, detail, busy, color = presentation("unconfirmed")
+        self.assertEqual(title, "입력 확인이 필요해요")
+        self.assertIn("복구문", detail)
+        self.assertFalse(busy)
+        self.assertEqual(color, "orange")
 
     def test_text_mismatch_diagnostics_return_codes_without_contents(self):
         for expected, actual, code in (

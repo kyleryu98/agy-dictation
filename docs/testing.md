@@ -156,3 +156,51 @@ Record the macOS, Python, and AGY CLI versions; repository revision or source-sn
   it is not evidence that all repeated-switch cases are fixed. Mismatch diagnostics
   now distinguish nonbreaking spaces, terminal newlines, outer whitespace, partial
   prefixes and other differences using fixed codes only.
+
+## 2026-09-19 completion and truncated-input follow-up
+
+- Read-only diagnostics from the installed personal service show persistent
+  `text_pending_prefix` failures both between chunks and after the last chunk,
+  and a final `text_pending_trailing_newline` failure. The latter means the strings
+  differ only in terminal newlines. Prefix codes alone cannot distinguish an AX
+  snapshot lag from actual character loss. These records do not establish that an
+  app switch caused each incident, or that audio capture lost the utterance tail.
+- The previous implementation sends at most 16 UTF-16 units, then stops sending
+  the remaining sentence when the expected field value is not acknowledged within
+  two seconds. Its exact comparison rejects an app-added paragraph newline, and
+  its final foreground check rejects a completed write after switching apps.
+- Synthetic regressions reproduce those failures against the previous source.
+  The updated source prefers a single `AXSelectedText` replacement when supported,
+  verifies text on the originally captured element after the final write, and
+  handles an added terminal newline without accepting partial words or missing
+  baseline text. Full-range text reads avoid relying solely on a rendered AXValue.
+- Native writes, keyboard fallback, delayed acknowledgement, surrogate-pair
+  selection replacement, app switches before/mid/after insertion, unexpected text,
+  cancellation, modifiers, torn character counts and lost cursor acknowledgement
+  are covered with mocked native frameworks. An attempted native write never falls
+  back or retries, including when the API reports an error after accepting text.
+- Unconfirmed final input retains the recovery file and does not produce a success
+  sound or a definitive failure claim. The HUD has a separate six-second
+  confirmation-needed state. Real inter-chunk focus changes still stop later input.
+- 153 unit tests passed, Ruff passed, and `git diff --check` passed. Tests used the
+  Command Line Tools Git because the default Git requires Xcode license acceptance.
+  No license, permissions, login, microphone, or real typing changes were made.
+- A read-only query confirmed that the inspected Aside editor exposes writable
+  selected text and full-range reads. This checks capability only; the new native
+  write path has not been exercised with real input. Codex and other app/editor
+  combinations remain manual acceptance targets.
+- The initial repair changed only repository files. After explicit subsequent
+  authorization to update the installed service, the previous service and HUD
+  files were backed up privately. Twelve input/state definitions were copied from
+  the repository with AST equality checks; the HUD and IPC helper were checked
+  byte-for-byte. Existing provider code, account state and runtime locations were
+  retained. The state worker and matching trigger were updated together so that
+  cancellation remains recoverable on the next recording.
+- 54 relevant policy tests also passed against the staged personal-service files,
+  with all native input and permission frameworks mocked. The installed files
+  matched that tested stage. A graceful service stop and restart completed, a new
+  process was observed, and the fresh service status reached `idle`.
+- Restart readiness is not real dictation acceptance. Repeated live speech and
+  app-switch validation of the new insertion path remain manual acceptance gates;
+  microphone use, real typing, permission prompts and login changes were not
+  automated during deployment.
