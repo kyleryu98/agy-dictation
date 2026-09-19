@@ -13,7 +13,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from agy_dictation.config import BASE, LOG, ENGINE_APP, ENGINE_BUNDLE_ID, SERVICE_LABEL  # noqa: E402
+from agy_dictation.config import BASE, LOG, ENGINE_APP, ENGINE_BUNDLE_ID, SERVICE_LABEL, AGY  # noqa: E402
+
+
+def runtime_settings():
+    return {
+        "AGY_DICTATION_DATA_DIR": str(BASE.absolute()),
+        "AGY_DICTATION_LOG_DIR": str(LOG.absolute()),
+        "AGY_DICTATION_ENGINE_APP": str(ENGINE_APP.absolute()),
+        "AGY_DICTATION_CLI": str(AGY.absolute()),
+    }
 
 
 def launch_agent(python: Path, source: Path) -> dict:
@@ -24,6 +33,7 @@ def launch_agent(python: Path, source: Path) -> dict:
         "EnvironmentVariables": {
             "PYTHONPATH": str(source),
             "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            **runtime_settings(),
         },
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
@@ -96,14 +106,23 @@ def main(argv=None):
     paths = site.getsitepackages()
     if site.ENABLE_USER_SITE:
         paths.append(site.getusersitepackages())
-    (resources / "runtime.json").write_text(json.dumps({"dependency_paths": paths}, indent=2))
-    (resources / "engine_bootstrap.py").write_text("""import json, runpy, sys
+    (resources / "runtime.json").write_text(
+        json.dumps({"dependency_paths": paths, "settings": runtime_settings()}, indent=2)
+    )
+    (resources / "engine_bootstrap.py").write_text("""import importlib, json, os, runpy, sys
 from pathlib import Path
+sys.dont_write_bytecode = True
 resources = Path(__file__).resolve().parent
-for path in json.loads((resources / "runtime.json").read_text())["dependency_paths"]:
+config = json.loads((resources / "runtime.json").read_text())
+os.environ.update(config["settings"])
+for path in config["dependency_paths"]:
     if path not in sys.path: sys.path.append(path)
 sys.path.insert(0, str(resources / "python"))
-runpy.run_module("agy_dictation.macos.engine", run_name="__main__")
+if "--check" in sys.argv:
+    importlib.import_module("agy_dictation.macos.engine")
+    print("Packaged engine imports OK; no microphone or UI started.")
+else:
+    runpy.run_module("agy_dictation.macos.engine", run_name="__main__")
 """)
     bridge = destination / "support/bin/prolisten-agy-export-prompt"
     bridge.parent.mkdir(parents=True)
@@ -139,7 +158,12 @@ runpy.run_module("agy_dictation.macos.engine", run_name="__main__")
     ).write_text(f"""LOCAL DEVELOPMENT BUILD ONLY — not a standalone distribution.
 Nothing was installed or started. No credentials are included.
 
-Before a manual installation:
+Installation is an explicit separate command:
+{sys.executable} scripts/manage_macos.py install --from-build {destination} --apply
+Then run setup-cli --apply to finish your own CLI login, followed by start --apply.
+Stop or uninstall using the same manage_macos.py tool. No action is automatic.
+
+Before installation:
 - Keep this checkout and its Python environment at their current locations.
 - Ensure official agy is installed and sign in interactively using your own account.
 - Avoid running another dictation service with the same global hotkey.

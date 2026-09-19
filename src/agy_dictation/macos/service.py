@@ -38,6 +38,13 @@ class BridgeError(Exception):
     pass
 
 
+class EngineError(BridgeError):
+    def __init__(self, code):
+        error = ipc.RemoteError(code)
+        self.code = error.code
+        super().__init__(str(error))
+
+
 def attr(el, name, default=None):
     if el is None:
         return default
@@ -106,17 +113,19 @@ class CLI:
             ipc.require_same_user(sock)
             ipc.send(sock, {"command": command, "token": token}, ipc.MAX_REQUEST)
             return ipc.response_text(ipc.receive(sock, ipc.MAX_RESPONSE, timeout))
+        except ipc.RemoteError as error:
+            raise EngineError(error.code) from None
         except (ValueError, OSError):
-            raise BridgeError(
-                "음성 엔진 요청에 실패했습니다. 권한과 실행 상태를 확인해 주세요."
-            ) from None
+            raise EngineError("engine_unavailable") from None
         finally:
             sock.close()
 
     def start(self):
         try:
             self.request("ping", 1)
-        except Exception:
+        except EngineError as error:
+            if error.code != "engine_unavailable":
+                raise
             subprocess.run(
                 ["/usr/bin/open", "-g", "-a", str(ENGINE_APP), "--args", str(ENGINE_BOOTSTRAP)],
                 check=True,
@@ -126,10 +135,12 @@ class CLI:
                 try:
                     self.request("ping", 1)
                     break
-                except Exception:
+                except EngineError as error:
+                    if error.code != "engine_unavailable":
+                        raise
                     time.sleep(0.2)
             else:
-                raise BridgeError("AGY Voice Engine의 마이크 권한을 확인해 주세요.")
+                raise EngineError("engine_unavailable")
         self.request("start")
 
     def begin(self):
@@ -150,6 +161,13 @@ class CLI:
             self.request("reset", 5)
         except Exception:
             pass
+
+    def shutdown(self):
+        try:
+            self.request("shutdown", 5)
+            return True
+        except BridgeError:
+            return False
 
 
 def editable(el):
@@ -299,7 +317,12 @@ def worker():
     except Exception as e:
         backend.close()
         logging.error("engine startup failed type=%s", type(e).__name__)
-        status("error", "음성 엔진을 시작하지 못했습니다. 권한과 설치 상태를 확인해 주세요.")
+        status(
+            "error",
+            str(e)
+            if isinstance(e, BridgeError)
+            else "음성 엔진을 시작하지 못했습니다. 권한과 설치 상태를 확인해 주세요.",
+        )
     while True:
         action = ops.get()
         with objc.autorelease_pool():
@@ -310,7 +333,8 @@ def worker():
                     status("idle", "녹음을 취소했습니다.")
                 elif session is None:
                     target = capture_target()
-                    cancel_requested.clear()
+                    if cancel_requested.is_set():
+                        raise EngineError("cancelled")
                     status("connecting")
                     backend.begin()
                     if cancel_requested.is_set():
@@ -371,15 +395,22 @@ def trigger(action="toggle"):
     global busy, last_trigger
     if action == "cancel":
         cancel_requested.set()
-        if busy:
+        with mutex:
+            was_busy = busy
+            if not was_busy:
+                busy = True
+                ops.put(action)
+        if was_busy:
             status("idle", "녹음을 취소했습니다.")
             threading.Thread(target=backend.cancel, daemon=True).start()
-            return
+        return
     with mutex:
         if busy or time.monotonic() - last_trigger < 0.4:
             return
         busy = True
         last_trigger = time.monotonic()
+        if session is None:
+            cancel_requested.clear()
     ops.put(action)
 
 

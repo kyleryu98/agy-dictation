@@ -13,9 +13,37 @@ import AppKit as AK
 import CoreFoundation as CF
 import AVFoundation as AV
 import objc
-from ..cli_backend import CLI, BridgeError
+from ..cli_backend import CLI
 from ..config import BASE, LOG, ensure_private_dir
 from .. import ipc, secure_files as sf
+
+
+def execute_command(command, cli, allowed, operation):
+    """Dispatch an already authenticated command; control never needs the mic."""
+    if command in {"cancel", "shutdown"}:
+        cli.cancel()
+        return ""
+    if command == "ping":
+        return ""
+    if command != "reset" and not allowed:
+        raise ipc.RemoteError("permission_required")
+    if not operation.acquire(timeout=0.1):
+        raise ipc.RemoteError("busy")
+    try:
+        text = ""
+        if command == "start":
+            cli.start()
+        elif command == "begin":
+            cli.begin()
+        elif command == "finish":
+            text = cli.finish()
+        elif command == "reset":
+            cli.close()
+        if not isinstance(text, str) or len(text) > ipc.MAX_TRANSCRIPT:
+            raise ipc.ProtocolError("Invalid transcript")
+        return text
+    finally:
+        operation.release()
 
 
 def main():
@@ -44,23 +72,19 @@ def main():
     app = AK.NSApplication.sharedApplication()
     app.setActivationPolicy_(AK.NSApplicationActivationPolicyAccessory)
     cli = CLI()
-    ready = threading.Event()
     allowed = [False]
     auth = AV.AVCaptureDevice.authorizationStatusForMediaType_(AV.AVMediaTypeAudio)
     if auth == 3:
         allowed[0] = True
-        ready.set()
     elif auth == 0:
 
         def permission(granted):
             allowed[0] = bool(granted)
-            ready.set()
 
         AV.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
             AV.AVMediaTypeAudio, permission
         )
-    else:
-        ready.set()
+    shutdown_requested = threading.Event()
     operation = threading.Lock()
     slots = threading.BoundedSemaphore(8)
     socket_identity = [None]
@@ -68,54 +92,33 @@ def main():
     def handle(conn):
         try:
             with conn, objc.autorelease_pool():
+                shutting_down = False
                 try:
                     ipc.require_same_user(conn)
                     command = ipc.request_command(ipc.receive(conn, ipc.MAX_REQUEST, 5), capability)
-                    text = ""
-                    if not allowed[0]:
-                        reply = {"ok": False, "code": "permission_required"}
-                    elif command == "cancel":
-                        cli.cancel()
-                        reply = {"ok": True, "text": ""}
-                    elif command == "ping":
-                        reply = {"ok": True, "text": ""}
-                    elif not operation.acquire(timeout=0.1):
-                        reply = {"ok": False, "code": "busy"}
-                    else:
-                        try:
-                            if command == "start":
-                                cli.start()
-                            elif command == "begin":
-                                cli.begin()
-                            elif command == "finish":
-                                text = cli.finish()
-                            elif command == "reset":
-                                cli.close()
-                            if not isinstance(text, str) or len(text) > ipc.MAX_TRANSCRIPT:
-                                raise ipc.ProtocolError("Invalid transcript")
-                            reply = {"ok": True, "text": text}
-                        finally:
-                            operation.release()
+                    text = execute_command(command, cli, allowed[0], operation)
+                    shutting_down = command == "shutdown"
+                    reply = {"ok": True, "text": text}
+                except ipc.RemoteError as error:
+                    logging.warning("engine operation failed code=%s", error.code)
+                    reply = {"ok": False, "code": error.code}
                 except (ipc.ProtocolError, ValueError, OSError) as error:
                     logging.warning("IPC rejected type=%s", type(error).__name__)
                     reply = {"ok": False, "code": "protocol_error"}
                 except Exception as error:
                     logging.error("engine operation failed type=%s", type(error).__name__)
-                    code = (
-                        "cancelled"
-                        if isinstance(error, BridgeError) and cli.cancelled.is_set()
-                        else "engine_error"
-                    )
-                    reply = {"ok": False, "code": code}
+                    reply = {"ok": False, "code": "engine_error"}
                 try:
                     ipc.send(conn, reply, ipc.MAX_RESPONSE)
                 except (ipc.ProtocolError, OSError, UnicodeError):
                     pass
+                if shutting_down:
+                    shutdown_requested.set()
         finally:
             slots.release()
 
     def serve():
-        ready.wait()
+        # Keep authenticated control available even while permission is pending.
         logging.info("microphone authorized=%s", allowed[0])
         path = BASE / "engine.sock"
         try:
@@ -160,6 +163,8 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     while True:
         CF.CFRunLoopRunInMode(CF.kCFRunLoopDefaultMode, 0.1, False)
+        if shutdown_requested.is_set():
+            shutdown()
 
 
 if __name__ == "__main__":

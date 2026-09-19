@@ -14,6 +14,7 @@ import time
 import struct
 import uuid
 import pyte
+from .ipc import RemoteError
 from .config import BASE, AGY, EDITOR_BRIDGE, ensure_private_dir
 from .secure_files import (
     atomic_write_json,
@@ -27,7 +28,7 @@ from .secure_files import (
 )
 
 
-class BridgeError(Exception):
+class BridgeError(RemoteError):
     pass
 
 
@@ -87,9 +88,9 @@ class CLI:
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if self.cancelled.is_set():
-                raise BridgeError("녹음을 취소했습니다.")
+                raise BridgeError("cancelled")
             if self.proc.poll() is not None:
-                raise BridgeError("AGY CLI가 종료됐습니다. 다시 시작합니다.")
+                raise BridgeError("cli_exited")
             t = self.output()
             if needle in t:
                 return
@@ -101,15 +102,20 @@ class CLI:
                     "voice dictation is not available",
                 )
             ):
-                raise BridgeError("AGY 음성입력 인증 또는 마이크 권한을 확인해 주세요.")
+                raise BridgeError("voice_unavailable")
             time.sleep(0.05)
-        raise BridgeError("AGY CLI 응답 대기 시간이 초과됐습니다.")
+        raise BridgeError("cli_timeout")
 
-    def start(self):
+    def start(self, *, reset_cancel=True):
         if self.proc is not None and self.proc.poll() is None:
             return
         if self.fd is not None:
             self.close()
+        # An explicit start can recover after reset/failure. begin() already
+        # cleared cancellation and must preserve any subsequent cancel request.
+        if reset_cancel:
+            with self._state:
+                self.cancelled.clear()
         ensure_private_dir(BASE)
         folder = BASE / "voice-session"
         ensure_private_dir(folder)
@@ -120,7 +126,7 @@ class CLI:
             os.close(slave)
             os.close(self.fd)
             self.fd = None
-            raise BridgeError("AGY CLI 터미널을 준비하지 못했습니다.") from None
+            raise BridgeError("cli_start_failed") from None
         env = os.environ.copy()
         for key in tuple(env):
             if key.startswith(("PYTHON", "DYLD_", "LD_")) or key in {
@@ -157,7 +163,7 @@ class CLI:
         except Exception:
             os.close(self.fd)
             self.fd = None
-            raise BridgeError("AGY CLI를 시작하지 못했습니다.") from None
+            raise BridgeError("cli_start_failed") from None
         finally:
             os.close(slave)
         self.reset()
@@ -172,21 +178,21 @@ class CLI:
     def _wait_ready(self, folder):
         end = time.monotonic() + 45
         while time.monotonic() < end:
+            if self.cancelled.is_set():
+                raise BridgeError("cancelled")
             text = self.output()
             if "Do you trust the contents of this project?" in text:
                 if str(folder) not in text:
-                    raise BridgeError("예상하지 못한 작업 폴더 신뢰 요청입니다.")
-                raise BridgeError(
-                    "최초 설정이 필요합니다. 전사용 폴더에서 AGY CLI를 직접 실행해 로그인과 폴더 신뢰를 확인해 주세요."
-                )
+                    raise BridgeError("unexpected_project")
+                raise BridgeError("trust_required")
             if "for shortcuts" in text:
                 return
             if "Terms of Service & Data Use" in text:
-                raise BridgeError("AGY CLI의 이용약관 확인이 필요합니다.")
+                raise BridgeError("terms_required")
             if self.proc.poll() is not None:
-                raise BridgeError("AGY CLI를 시작하지 못했습니다.")
+                raise BridgeError("cli_start_failed")
             time.sleep(0.1)
-        raise BridgeError("AGY CLI 로그인을 확인해 주세요.")
+        raise BridgeError("login_required")
 
     def begin(self):
         if self._session_used or (
@@ -194,10 +200,10 @@ class CLI:
         ):
             self.close()
         self.cancelled.clear()
-        self.start()
+        self.start(reset_cancel=False)
         with self._state:
             if self.cancelled.is_set():
-                raise BridgeError("녹음을 취소했습니다.")
+                raise BridgeError("cancelled")
             self._session_used = False
             self.reset()
             self.send(b"\x1b[15~")
@@ -205,14 +211,14 @@ class CLI:
 
     def finish(self):
         if not self._finishing.acquire(blocking=False):
-            raise BridgeError("전사문을 이미 처리하고 있습니다.")
+            raise BridgeError("busy")
         try:
             with private_directory(BASE) as directory:
                 return self._finish(directory)
         except BridgeError:
             raise
         except Exception:
-            raise BridgeError("안전한 전사문 전달을 확인하지 못했습니다.") from None
+            raise BridgeError("protocol_error") from None
         finally:
             self._finishing.release()
 
@@ -221,9 +227,9 @@ class CLI:
         created = time.time()
         with self._state, exchange_lock(directory):
             if self.cancelled.is_set():
-                raise BridgeError("녹음을 취소했습니다.")
+                raise BridgeError("cancelled")
             if self._session_used:
-                raise BridgeError("새 녹음을 시작해 주세요.")
+                raise BridgeError("recording_required")
             self._session_used = True
             unlink(directory, "transcript.json")
             atomic_write_json(
@@ -239,7 +245,7 @@ class CLI:
         try:
             with self._state:
                 if self.cancelled.is_set():
-                    raise BridgeError("녹음을 취소했습니다.")
+                    raise BridgeError("cancelled")
                 self.reset()
                 self.send(b"\x1b[15~")
             # Native editor callback is the completion acknowledgement.
@@ -248,9 +254,9 @@ class CLI:
             while time.monotonic() < end:
                 with self._state:
                     if self.cancelled.is_set():
-                        raise BridgeError("녹음을 취소했습니다.")
+                        raise BridgeError("cancelled")
                     if self.proc is not None and self.proc.poll() is not None:
-                        raise BridgeError("AGY CLI가 종료됐습니다.")
+                        raise BridgeError("cli_exited")
                     with exchange_lock(directory):
                         try:
                             result = read_json(directory, "transcript.json")
@@ -269,7 +275,7 @@ class CLI:
                         self.send(b"\x07")
                         next_request = time.monotonic() + 1
                 time.sleep(0.05)
-            raise BridgeError("20초 안에 전사문을 받지 못했습니다. 녹음을 취소했습니다.")
+            raise BridgeError("transcription_timeout")
         finally:
             with self._state, exchange_lock(directory):
                 unlink(directory, "transcript-request.json")

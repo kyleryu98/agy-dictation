@@ -25,6 +25,7 @@ PATTERNS = {
 }
 RUNTIME_NAMES = {
     "auth.json",
+    "installation.json",
     "credentials.json",
     "transcript.json",
     "transcript-request.json",

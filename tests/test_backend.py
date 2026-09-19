@@ -190,7 +190,7 @@ class BackendTests(unittest.TestCase):
         self.assertFalse(self.cli._session_used)
 
     def test_cancel_during_start_is_not_cleared_by_begin(self):
-        with patch.object(self.cli, "start", side_effect=self.cli.cancel):
+        with patch.object(self.cli, "start", side_effect=lambda **_: self.cli.cancel()):
             with patch.object(self.cli, "send") as send:
                 with self.assertRaisesRegex(backend.BridgeError, "취소"):
                     self.cli.begin()
@@ -202,7 +202,52 @@ class BackendTests(unittest.TestCase):
         with self.assertRaisesRegex(backend.BridgeError, "취소"):
             self.cli.wait("Recording", 20)
 
+    def test_cancel_during_startup_stops_at_next_poll(self):
+        self.cli.proc = Mock()
+        self.cli.proc.poll.return_value = None
+
+        def cancel_after_first_poll(seconds):
+            self.advance(seconds)
+            self.cli.cancelled.set()
+
+        with patch.object(backend.time, "sleep", side_effect=cancel_after_first_poll):
+            with self.assertRaises(backend.BridgeError) as caught:
+                self.cli._wait_ready(self.root)
+        self.assertEqual(caught.exception.code, "cancelled")
+        self.assertLessEqual(self.elapsed, 0.1)
+
+    def test_cancel_beats_ready_banner(self):
+        self.cli.cancelled.set()
+        with patch.object(self.cli, "output", return_value="for shortcuts") as output:
+            with self.assertRaises(backend.BridgeError) as caught:
+                self.cli._wait_ready(self.root)
+        self.assertEqual(caught.exception.code, "cancelled")
+        output.assert_not_called()
+
+    def test_first_run_errors_keep_safe_codes_after_cleanup(self):
+        for output, code in (
+            (f"Do you trust the contents of this project? {self.root}", "trust_required"),
+            ("Do you trust the contents of this project? SECRET", "unexpected_project"),
+            ("Terms of Service & Data Use SECRET", "terms_required"),
+            ("SECRET", "login_required"),
+        ):
+            with self.subTest(code=code):
+                self.cli = backend.CLI()
+                self.cli.proc = Mock()
+                self.cli.proc.poll.return_value = None
+                with patch.object(self.cli, "output", return_value=output):
+                    with self.assertRaises(backend.BridgeError) as caught:
+                        self.cli._wait_ready(self.root)
+                with patch.object(self.cli, "send"), patch.object(backend.os, "killpg"):
+                    self.cli.close()
+                self.assertTrue(self.cli.cancelled.is_set())
+                self.assertEqual(caught.exception.code, code)
+                self.assertNotIn("SECRET", str(caught.exception))
+
     def test_spawn_has_private_umask_absolute_editor_and_sanitized_env(self):
+        # reset()/failed-start cleanup marks the previous session cancelled;
+        # an explicit subsequent start must still reach readiness.
+        self.cli.cancelled.set()
         process = Mock()
         process.poll.return_value = None
         bridge = self.root / "space dir/editor"
@@ -231,6 +276,7 @@ class BackendTests(unittest.TestCase):
                             with patch.object(backend.threading, "Thread"):
                                 with patch.object(self.cli, "output", return_value="for shortcuts"):
                                     self.cli.start()
+        self.assertFalse(self.cli.cancelled.is_set())
         kwargs = popen.call_args.kwargs
         self.assertEqual(kwargs["umask"], 0o077)
         self.assertTrue(kwargs["close_fds"])

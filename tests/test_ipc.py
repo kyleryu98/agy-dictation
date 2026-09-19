@@ -44,6 +44,33 @@ class IPCTests(unittest.TestCase):
             ipc.response_text({"ok": False, "error": "sensitive contents"})
         self.assertNotIn("sensitive contents", str(caught.exception))
 
+    def test_known_operation_errors_preserve_code_and_fixed_local_text(self):
+        for code, message in ipc.ERRORS.items():
+            with self.subTest(code=code):
+                with self.assertRaises(ipc.RemoteError) as caught:
+                    ipc.response_text({"ok": False, "code": code})
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(str(caught.exception), message)
+
+    def test_unknown_errors_and_extra_messages_are_not_trusted(self):
+        for payload in (
+            {"ok": False, "code": "SECRET"},
+            {"ok": False, "code": "trust_required", "message": "SECRET"},
+            {"ok": False, "code": ["SECRET"]},
+        ):
+            with self.assertRaises(ipc.ProtocolError) as caught:
+                ipc.response_text(payload)
+            self.assertNotIn("SECRET", str(caught.exception))
+        self.assertEqual(ipc.RemoteError("SECRET").code, "engine_error")
+
+    def test_shutdown_still_requires_the_capability(self):
+        token = "a" * 64
+        self.assertEqual(
+            ipc.request_command({"command": "shutdown", "token": token}, token), "shutdown"
+        )
+        with self.assertRaises(ipc.ProtocolError):
+            ipc.request_command({"command": "shutdown", "token": "b" * 64}, token)
+
     def test_control_characters_rejected_before_insertion(self):
         for char in [chr(0), chr(3), chr(27), chr(127), "\u202e", "\ud800"]:
             with self.assertRaises(ipc.ProtocolError):

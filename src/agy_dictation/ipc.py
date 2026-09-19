@@ -10,7 +10,7 @@ import struct
 import time
 import unicodedata
 
-COMMANDS = frozenset({"ping", "start", "begin", "finish", "cancel", "reset"})
+COMMANDS = frozenset({"ping", "start", "begin", "finish", "cancel", "reset", "shutdown"})
 MAX_REQUEST = 4096
 MAX_RESPONSE = 262144
 MAX_TRANSCRIPT = 32768
@@ -20,11 +20,30 @@ ERRORS = {
     "cancelled": "녹음을 취소했습니다.",
     "protocol_error": "음성 엔진 응답을 확인하지 못했습니다.",
     "engine_error": "음성 엔진 작업에 실패했습니다. 다시 시도해 주세요.",
+    "engine_unavailable": "음성 엔진 요청에 실패했습니다. 권한과 실행 상태를 확인해 주세요.",
+    "cli_start_failed": "AGY CLI를 시작하지 못했습니다. CLI 설치 경로를 확인해 주세요.",
+    "cli_exited": "AGY CLI가 종료됐습니다. 다시 시작해 주세요.",
+    "cli_timeout": "AGY CLI 응답 대기 시간이 초과됐습니다.",
+    "trust_required": "전사용 voice-session 폴더에서 AGY CLI를 직접 실행해 로그인과 폴더 신뢰를 확인해 주세요.",
+    "unexpected_project": "예상하지 못한 작업 폴더 신뢰 요청입니다. 전사용 폴더 설정을 확인해 주세요.",
+    "terms_required": "AGY CLI를 직접 실행해 이용약관을 확인해 주세요.",
+    "login_required": "전사용 voice-session 폴더에서 AGY CLI를 직접 실행해 로그인과 초기 설정을 확인해 주세요.",
+    "voice_unavailable": "AGY 음성입력 인증 또는 마이크 권한을 확인해 주세요.",
+    "recording_required": "새 녹음을 시작해 주세요.",
+    "transcription_timeout": "20초 안에 전사문을 받지 못했습니다. 녹음을 취소했습니다.",
 }
 
 
 class ProtocolError(ValueError):
     pass
+
+
+class RemoteError(Exception):
+    """An operation failure with only an allowlisted code and local fixed text."""
+
+    def __init__(self, code="engine_error"):
+        self.code = code if isinstance(code, str) and code in ERRORS else "engine_error"
+        super().__init__(ERRORS[self.code])
 
 
 def peer_uid(conn):
@@ -117,7 +136,7 @@ def response_text(payload):
     if payload.get("ok") is False and set(payload) == {"ok", "code"}:
         code = payload["code"]
         if isinstance(code, str) and code in ERRORS:
-            raise ProtocolError(ERRORS[code])
+            raise RemoteError(code)
     raise ProtocolError("Invalid response")
 
 

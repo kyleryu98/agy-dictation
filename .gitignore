@@ -43,3 +43,5 @@ INSTALL.txt
 DO_NOT_PUBLISH.txt
 work/
 security-audit/
+
+installation.json

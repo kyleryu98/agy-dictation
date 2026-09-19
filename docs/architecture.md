@@ -28,6 +28,7 @@ AGY Dictation은 자체 음성 모델이나 별도 인증 클라이언트가 아
 | `src/agy_dictation/macos/hud.py` | Python + PyObjC AppKit 상태 표시 |
 | `scripts/doctor.py` | 환경 진단 |
 | `scripts/build_macos.py` | 로컬 앱 번들과 LaunchAgent 메타데이터 준비 |
+| `scripts/manage_macos.py` | 명시적 설치·CLI 초기 설정·시작·중지·삭제 |
 
 CLI의 터미널 출력과 외부 편집기 동작은 CLI 버전 변화에 영향을 받을 수 있습니다. 안정된 공개 전사 API를 직접 호출하는 통합으로 설명하면 안 됩니다. 음성 입력은 CLI의 대화형 TUI 기능이므로 `--print`로 대체할 수 없습니다. [공식 음성 문서](https://www.antigravity.google/docs/cli/commands/voice/)
 
@@ -45,4 +46,4 @@ CLI의 터미널 출력과 외부 편집기 동작은 CLI 버전 변화에 영�
 
 ## 패키징 경계
 
-로컬 번들 빌드는 기존 Python 프레임워크와 모듈에 의존합니다. LaunchAgent 메타데이터 생성과 실제 등록·자동 시작은 별개입니다. 빌드 스크립트는 설치·등록·실행을 하지 않는 계약이며, 독립 배포에는 의존성 포함 방식, 서명, 공증과 새 Mac 검증이 추가로 필요합니다.
+로컬 번들 빌드는 기존 Python 프레임워크와 모듈에 의존합니다. LaunchAgent 메타데이터 생성과 실제 등록·자동 시작은 별개입니다. 빌드 스크립트는 설치·등록·실행을 하지 않습니다. 별도 관리 도구의 `--apply`를 사용자가 실행할 때만 설치·서비스 변경을 수행합니다. 독립 배포에는 의존성 포함 방식, 서명, 공증과 새 Mac 검증이 추가로 필요합니다.
