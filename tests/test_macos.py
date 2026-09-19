@@ -372,7 +372,7 @@ class FocusCompatibilityTests(unittest.TestCase):
     @contextmanager
     def editor(self, before="A😀B", selected=(1, 2), *, native=True,
                delay=0, terminal_newline=False, switch_after_write=False,
-               delivered_suffix="", write_error=0):
+               delivered_suffix=""):
         """Independent UTF-16 editor; every native operation remains mocked."""
         target = {"pid": 123, "root": "app", "target": "editor",
                   "before": before, "range": selected}
@@ -400,11 +400,6 @@ class FocusCompatibilityTests(unittest.TestCase):
             if switch_after_write:
                 state["pid"] = 456
 
-        def set_selected(el, attribute, text):
-            self.assertEqual((el, attribute), ("editor", "AXSelectedText"))
-            replace(text)
-            return write_error
-
         def post(_, down):
             if down:
                 replace(payload[0])
@@ -416,7 +411,7 @@ class FocusCompatibilityTests(unittest.TestCase):
             patch.object(b, "selection_range", side_effect=lambda _: state["range"]),
             patch.object(b, "wait_modifiers"),
             patch.object(b.AX, "AXUIElementIsAttributeSettable", return_value=(0, native)),
-            patch.object(b.AX, "AXUIElementSetAttributeValue", side_effect=set_selected) as write,
+            patch.object(b.AX, "AXUIElementSetAttributeValue", return_value=0) as write,
             patch.object(b.Q, "CGEventSourceFlagsState", return_value=0),
             patch.object(b.Q, "CGEventCreateKeyboardEvent", side_effect=lambda a, c, down: down),
             patch.object(b.Q, "CGEventKeyboardSetUnicodeString", side_effect=lambda e, n, t: payload.__setitem__(0, t)),
@@ -424,20 +419,21 @@ class FocusCompatibilityTests(unittest.TestCase):
         ):
             yield target, state, write, events
 
-    def test_native_selection_inserts_entire_sentence_once_preserving_neighbors(self):
+    def test_keyboard_inserts_entire_sentence_once_preserving_neighbors(self):
         text = "한글과 English 😀 문장 끝까지 한 번에 입력합니다. " * 3
         with self.editor(delay=1.1) as (target, state, write, events):
             self.assertTrue(b.inject(text, target))
         self.assertEqual(state["text"], "A" + text + "B")
-        write.assert_called_once_with("editor", "AXSelectedText", text)
-        events.assert_not_called()
+        self.assertEqual("".join(state["writes"]), text)
+        write.assert_not_called()
+        self.assertEqual(events.call_count, 2 * len(state["writes"]))
 
-    def test_complete_native_input_is_confirmed_after_foreground_switch(self):
+    def test_complete_delayed_input_is_confirmed_after_foreground_switch(self):
         with self.editor(delay=.2, switch_after_write=True) as (target, state, write, events):
             self.assertTrue(b.inject("complete", target))
         self.assertEqual(state["text"], "AcompleteB")
-        write.assert_called_once()
-        events.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(events.call_count, 2)
 
     def test_final_keyboard_input_is_confirmed_after_foreground_switch(self):
         with self.editor(native=False, switch_after_write=True) as (target, state, write, events):
@@ -455,51 +451,49 @@ class FocusCompatibilityTests(unittest.TestCase):
         write.assert_not_called()
         self.assertGreater(events.call_count, 2)
 
-    def test_native_write_error_never_triggers_duplicate_keyboard_fallback(self):
-        # AX can report CannotComplete even when the application accepted the write.
-        with self.editor(write_error=-25204) as (target, state, write, events):
+    def test_advertised_native_setter_is_never_used(self):
+        # Chrome advertises this setter and returns zero but can leave text unchanged.
+        with self.editor() as (target, state, write, events):
+            write.side_effect = None
+            write.return_value = 0
             self.assertTrue(b.inject("complete", target))
         self.assertEqual(state["text"], "AcompleteB")
-        write.assert_called_once()
-        events.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(events.call_count, 2)
 
-    def test_native_mismatch_is_unconfirmed_without_retry_or_keyboard_fallback(self):
+    def test_final_text_mismatch_is_unconfirmed_without_retry(self):
         with self.editor(delivered_suffix="unexpected") as (target, state, write, events):
             with self.assertRaises(b.InputUnconfirmed):
                 b.inject("complete", target)
         self.assertEqual(state["text"], "AcompleteunexpectedB")
-        write.assert_called_once()
-        events.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(events.call_count, 2)
 
-    def test_rejected_native_write_does_not_delete_selection_or_fall_back(self):
-        for error in (-25204, RuntimeError("PRIVATE CONTENT")):
-            with self.subTest(error=type(error).__name__):
-                with self.editor() as (target, state, write, events):
-                    write.side_effect = error if isinstance(error, Exception) else None
-                    write.return_value = error
-                    with patch.object(b, "logging") as log:
-                        with self.assertRaises(b.InputUnconfirmed) as caught:
-                            b.inject("new text", target)
-                self.assertEqual((state["text"], state["range"]), ("A😀B", (1, 2)))
-                write.assert_called_once()
-                events.assert_not_called()
-                self.assertNotIn("PRIVATE CONTENT", str(caught.exception))
-                self.assertNotIn("PRIVATE CONTENT", str(log.mock_calls))
-
-    def test_changed_cursor_before_native_write_preserves_selected_text(self):
+    def test_rejected_keyboard_input_does_not_delete_selection_or_retry(self):
         with self.editor() as (target, state, write, events):
-            def capability(*_):
-                state["range"] = (0, 1)
-                return 0, True
+            events.side_effect = None
+            with patch.object(b, "logging") as log:
+                with self.assertRaises(b.InputUnconfirmed) as caught:
+                    b.inject("PRIVATE CONTENT", target)
+        self.assertEqual((state["text"], state["range"]), ("A😀B", (1, 2)))
+        write.assert_not_called()
+        self.assertEqual(events.call_count, 2)
+        self.assertNotIn("PRIVATE CONTENT", str(caught.exception))
+        self.assertNotIn("PRIVATE CONTENT", str(log.mock_calls))
 
-            with patch.object(b.AX, "AXUIElementIsAttributeSettable", side_effect=capability):
+    def test_changed_cursor_before_input_preserves_selected_text(self):
+        with self.editor() as (target, state, write, events):
+            def release_modifiers():
+                state["range"] = (0, 1)
+
+            with patch.object(b, "wait_modifiers", side_effect=release_modifiers):
                 with self.assertRaises(b.BridgeError):
                     b.inject("new text", target)
         self.assertEqual(state["text"], "A😀B")
         write.assert_not_called()
         events.assert_not_called()
 
-    def test_modifier_or_cancel_before_native_write_preserves_selected_text(self):
+    def test_modifier_or_cancel_before_input_preserves_selected_text(self):
         for cancel in (False, True):
             with self.subTest(cancel=cancel):
                 with self.editor() as (target, state, write, events):
@@ -541,7 +535,7 @@ class FocusCompatibilityTests(unittest.TestCase):
                 b.wait_for_target(target, final=True, after_input=True)
         self.assertTrue(all(call.args == ("original",) for call in read.call_args_list))
 
-    def test_out_of_bounds_selection_never_attempts_native_write(self):
+    def test_out_of_bounds_selection_never_attempts_input(self):
         with self.editor(selected=(1, 20)) as (target, state, write, events):
             with self.assertRaises(b.BridgeError):
                 b.inject("new text", target)

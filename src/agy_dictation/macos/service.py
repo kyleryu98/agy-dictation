@@ -514,14 +514,6 @@ def insertion_result(s, text):
             "before": expected, "input_written": True}
 
 
-def selected_text_writable(el):
-    try:
-        err, writable = AX.AXUIElementIsAttributeSettable(el, "AXSelectedText", None)
-        return err == 0 and bool(writable)
-    except Exception:
-        return False
-
-
 def check_input_keys():
     flags = Q.CGEventSourceFlagsState(Q.kCGEventSourceStateCombinedSessionState)
     if cancel_requested.is_set():
@@ -541,22 +533,8 @@ def inject(text, s):
     # Direct insertion only: no clipboard, Cmd+V, app activation or Return key.
     if not text.strip():
         raise BridgeError("인식된 음성이 없습니다.")
-    if s["before"] is not None and selected_text_writable(s["target"]):
-        expected = insertion_result(s, text)
-        wait_for_target(s)
-        check_input_keys()
-        # Replace only the verified selection, never the field's whole AXValue.
-        # A single native write avoids truncation between keyboard chunks.
-        try:
-            result = AX.AXUIElementSetAttributeValue(s["target"], "AXSelectedText", text)
-        except Exception:
-            result = None
-        if result != 0:
-            logging.info("native input acknowledgement pending")
-        # Even CannotComplete can arrive after a successful write. Observe only:
-        # retrying or falling back after any attempted write could duplicate text.
-        wait_for_target(expected, final=True, after_input=True)
-        return True
+    # Chromium can advertise writable AXSelectedText and return success without
+    # changing text. Keep one verified Unicode event path instead of probing writes.
     current = dict(s)
     chunks = list(unicode_chunks(text))
     for index, chunk in enumerate(chunks):

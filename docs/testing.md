@@ -204,3 +204,46 @@ Record the macOS, Python, and AGY CLI versions; repository revision or source-sn
   app-switch validation of the new insertion path remain manual acceptance gates;
   microphone use, real typing, permission prompts and login changes were not
   automated during deployment.
+
+## 2026-09-19 requested live acceptance checks
+
+Environment: macOS 27.0, Chrome 153.0.8010.52, Python 3.13.3. These were separately
+requested interactive checks in disposable localhost fields, not additions to the
+automated test suite. No messages or forms were submitted.
+
+- Live Chrome exposed a flaw in the proposed native write path: `AXSelectedText`
+  was reported writable and its setter returned zero, but the selected text and
+  DOM value remained unchanged. Capability checks and mock success had not proved
+  actual insertion. This path was removed from the repository and installed
+  service. Unicode keyboard input is the sole insertion path again; AX is used
+  for focus and acknowledgement, not trial text writes.
+- Actual keyboard delivery of a Korean/English/emoji sentence was confirmed in
+  a single-line input, textarea and contenteditable. Independent DOM checks and
+  captured-element reads verified full text and preservation of neighboring text.
+  The clipboard change count was unchanged. These checks isolate insertion;
+  they are not speech-recognition tests.
+- With the Cocoa main run loop running, as in the real service, changing apps
+  before insertion produced `app_changed`, zero keyboard events and unchanged
+  baseline text. Switching apps after the last write still confirmed the full
+  text in the original field. An earlier harness without a running main loop
+  cached the foreground application and is excluded from app-switch evidence.
+- Concurrent manual use caused early attempts to stop at their target guards.
+  Those attempts are not counted as passing insertion checks. Existing user text
+  in the test pages was preserved rather than reset for another attempt.
+- One physical-microphone attempt used the installed service's recording toggle,
+  macOS speech playback through the existing speaker route, the existing RODE
+  input route, AGY transcription and automatic insertion. The observed states were
+  `connecting`, `recording`, `transcribing`, `inserting`, `idle`; completion took
+  about 1.7 seconds after stopping. Clipboard and foreground remained unchanged.
+  **The transcript did not match the spoken test sentence or its final marker.**
+  This confirms that the pipeline ran, not recognition accuracy or absence of
+  utterance-tail loss. A natural-voice check was requested from the user and remains
+  pending. The real physical hotkey was not certified by this scripted toggle.
+- No audio, transcript contents or account information were written to test logs.
+  Existing recovery text was preserved. Audio routing, permissions and login were
+  not changed, and the test recording ended.
+- After removing native trial writes, all 153 unit tests, 54 relevant tests against
+  the installed source, and Ruff passed. The installed input definitions match the
+  repository, and its restart reached `idle`. Broader app/IME and natural-voice
+  acceptance remain unverified; the earlier native-write design is superseded by
+  this correction.
