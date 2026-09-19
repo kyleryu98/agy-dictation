@@ -83,7 +83,7 @@ def commit_email_domains(root):
     return tuple(domains)
 
 
-def scan_bytes(data, label, markers=(), public_commit_domains=()):
+def scan_bytes(data, label, markers=(), public_commit_domains=(), *, github_metadata=False):
     issues = []
     if len(data) > LIMIT:
         return [{"path": label, "kind": "oversize_unscanned"}]
@@ -98,7 +98,15 @@ def scan_bytes(data, label, markers=(), public_commit_domains=()):
             matches = list(pattern.finditer(line))
             if kind == "email_address":
                 matches = [
-                    m for m in matches if not public_commit_email(m.group(), public_commit_domains)
+                    m for m in matches
+                    if not public_commit_email(m.group(), public_commit_domains)
+                    and not (
+                        github_metadata and (
+                            m.group() == "noreply" + chr(64) + "github.com"
+                            or (line.startswith("Signed-off-by: dependabot[bot] <")
+                                and m.group() == "support" + chr(64) + "github.com")
+                        )
+                    )
                 ]
             if matches:
                 issues.append({"path": label, "line": number, "kind": kind})
@@ -205,7 +213,9 @@ def scan_repo(root, markers=(), check_identity=False):
             issues.extend({**issue, "path": "history:" + name} for issue in scan_name(name))
             blob(oid, "history:" + name)
     metadata = git(root, "log", "--all", "--format=%H%n%an%n%ae%n%cn%n%ce%n%B")
-    issues.extend(scan_bytes(metadata, "history:commit-metadata", markers, public_domains))
+    issues.extend(scan_bytes(
+        metadata, "history:commit-metadata", markers, public_domains, github_metadata=True
+    ))
     identity = {"checked": False}
     if check_identity:
         # Git's effective identity includes environment/command-line overrides.

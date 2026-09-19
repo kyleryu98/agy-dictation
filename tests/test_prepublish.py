@@ -107,6 +107,15 @@ class PrivacyGateTests(unittest.TestCase):
             audit.public_commit_email("author" + chr(64) + "notexample.org", ("example.org",))
         )
 
+    def test_public_github_bot_metadata_does_not_relax_source_or_identity(self):
+        noreply = "noreply" + chr(64) + "github.com"
+        support = "support" + chr(64) + "github.com"
+        metadata = (noreply + "\nSigned-off-by: dependabot[bot] <" + support + ">").encode()
+        self.assertFalse(audit.scan_bytes(metadata, "metadata", github_metadata=True))
+        self.assertTrue(audit.scan_bytes(metadata, "source"))
+        self.assertTrue(audit.scan_bytes(support.encode(), "metadata", github_metadata=True))
+        self.assertFalse(audit.public_commit_email(noreply))
+
     def test_invalid_domain_policy_fails_closed(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
