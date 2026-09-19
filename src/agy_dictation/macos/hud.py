@@ -78,6 +78,7 @@ class DictationHUD:
         self.started = 0.0
         self.dismiss_at = None
         self.visible = False
+        self.screen_layout = None
         style = A.NSWindowStyleMaskBorderless | A.NSWindowStyleMaskNonactivatingPanel
         self.panel = PassivePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             A.NSMakeRect(0, 0, 336, 88), style, A.NSBackingStoreBuffered, False
@@ -169,19 +170,40 @@ class DictationHUD:
             )
         )
         if not self.visible:
-            screen = A.NSScreen.mainScreen()
-            r = screen.visibleFrame()
-            self.panel.setFrameOrigin_(
-                A.NSMakePoint(r.origin.x + (r.size.width - 336) / 2, r.origin.y + 20)
-            )
+            if not self.place_on_screen(force=True):
+                return
             self.panel.setAlphaValue_(1)
             self.panel.orderFrontRegardless()
             self.visible = True
         self.tick()
 
+    def place_on_screen(self, force=False):
+        screens = list(A.NSScreen.screens())
+        if not screens:
+            # Display reconfiguration can temporarily leave no available screen.
+            self.screen_layout = None
+            return False
+        frames = [screen.visibleFrame() for screen in screens]
+        layout = tuple(
+            (r.origin.x, r.origin.y, r.size.width, r.size.height) for r in frames
+        )
+        if force or layout != self.screen_layout:
+            screen = A.NSScreen.mainScreen()
+            if screen not in screens:
+                screen = screens[0]
+            r = screen.visibleFrame()
+            size = self.panel.frame().size
+            self.panel.setFrameOrigin_(A.NSMakePoint(
+                r.origin.x + max(0, (r.size.width - size.width) / 2),
+                r.origin.y + min(20, max(0, r.size.height - size.height)),
+            ))
+            self.screen_layout = layout
+        return True
+
     def tick(self):
         if not self.visible:
             return
+        self.place_on_screen()
         now = time.monotonic()
         if self.kind == "recording":
             elapsed = int(now - self.started)

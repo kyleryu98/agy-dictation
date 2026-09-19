@@ -54,6 +54,64 @@ if sys.platform != "win32":
 
 @unittest.skipIf(sys.platform == "win32", "POSIX service policy")
 class MacOSTests(unittest.TestCase):
+    def test_visible_hud_moves_back_after_external_display_disconnects(self):
+        def rect(x, y, width, height):
+            return SimpleNamespace(
+                origin=SimpleNamespace(x=x, y=y),
+                size=SimpleNamespace(width=width, height=height),
+            )
+
+        laptop = Mock()
+        laptop.visibleFrame.return_value = rect(0, 40, 1512, 900)
+        external = Mock()
+        external.visibleFrame.return_value = rect(-2560, 0, 2560, 1400)
+        native = Mock()
+        native.NSMakePoint.side_effect = lambda x, y: (x, y)
+        native.NSScreen.screens.return_value = [laptop, external]
+        native.NSScreen.mainScreen.return_value = external
+        view = hud.DictationHUD.__new__(hud.DictationHUD)
+        view.panel = Mock()
+        view.panel.frame.return_value = rect(0, 0, 336, 88)
+        view.screen_layout = None
+        view.visible = True
+        view.kind = "transcribing"
+        view.dot = Mock()
+        view.dismiss_at = None
+        with patch.object(hud, "A", native):
+            view.tick()
+            view.panel.setFrameOrigin_.assert_called_once_with((-1448, 20))
+            view.panel.setFrameOrigin_.reset_mock()
+            view.tick()
+            view.panel.setFrameOrigin_.assert_not_called()
+            native.NSScreen.screens.return_value = [laptop]
+            # Even a stale mainScreen must not select the disconnected display.
+            view.tick()
+            view.panel.setFrameOrigin_.assert_called_once_with((588, 60))
+            view.panel.makeKeyAndOrderFront_.assert_not_called()
+
+    def test_hud_recovers_from_transient_empty_screen_list(self):
+        view = hud.DictationHUD.__new__(hud.DictationHUD)
+        view.panel = Mock()
+        view.panel.frame.return_value = SimpleNamespace(
+            size=SimpleNamespace(width=336, height=88)
+        )
+        view.screen_layout = ((0, 0, 1000, 800),)
+        native = Mock()
+        native.NSMakePoint.side_effect = lambda x, y: (x, y)
+        native.NSScreen.screens.return_value = []
+        with patch.object(hud, "A", native):
+            self.assertFalse(view.place_on_screen())
+            view.panel.setFrameOrigin_.assert_not_called()
+            screen = Mock()
+            screen.visibleFrame.return_value = SimpleNamespace(
+                origin=SimpleNamespace(x=0, y=0),
+                size=SimpleNamespace(width=1000, height=800),
+            )
+            native.NSScreen.screens.return_value = [screen]
+            native.NSScreen.mainScreen.return_value = None
+            self.assertTrue(view.place_on_screen())
+            view.panel.setFrameOrigin_.assert_called_once_with((332, 20))
+
     def setUp(self):
         b.pressed.clear()
         b.session = None
