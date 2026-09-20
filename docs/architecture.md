@@ -26,6 +26,13 @@ These modules and tools are currently implemented. Diagnostics are read-only, an
 | `src/agy_dictation/macos/service.py` | Global hotkeys, target focus verification, cancellation, and native input |
 | `src/agy_dictation/macos/engine.py` | Separate voice-engine process, microphone permissions, and CLI sessions |
 | `src/agy_dictation/macos/hud.py` | Status display using Python, PyObjC, and AppKit |
+| `src/agy_dictation/macos/menu.py` | Native status item, controls and settings window |
+| `src/agy_dictation/settings.py` | Private preferences and migration from legacy shortcut presets |
+| `src/agy_dictation/shortcuts.py` | Validated custom bindings and solo-modifier tap policy |
+| `src/agy_dictation/macos/shortcut_editor.py` | Inline keycap recorder, preview, save/cancel and reset |
+| `src/agy_dictation/macos/audio.py` | Input-device discovery and session-scoped native PCM capture |
+| `src/agy_dictation/audio_stream.py` | Bounded loopback audio stream and meters from identical PCM |
+| `src/agy_dictation/voice_session.py` | Capture/provider start, stop, finalization and cancellation ordering |
 | `scripts/doctor.py` | Environment diagnostics |
 | `scripts/build_macos.py` | Staging local app bundles and LaunchAgent metadata |
 | `scripts/manage_macos.py` | Explicit installation, CLI setup, start, stop, and removal |
@@ -33,6 +40,47 @@ These modules and tools are currently implemented. Diagnostics are read-only, an
 CLI terminal output and external-editor behavior may change between CLI versions. Do not describe this integration as a direct call to a stable public transcription API. Voice input is an interactive CLI TUI feature and cannot be replaced with `--print`. See the [official voice documentation](https://www.antigravity.google/docs/cli/commands/voice/).
 
 The service and voice engine communicate through a local Unix socket. This transport also needs attention in a Windows port.
+
+## Microphone and menu controls
+
+The voice helper owns microphone capture. Each recording resolves either the system
+default input or a saved device UID, and captures mono, signed 16-bit little-endian
+PCM at 16 kHz. The selected device stays fixed for that recording. A disconnected
+explicit selection fails rather than silently switching microphones. No system-wide
+audio preference is changed.
+
+The helper supplies a random loopback-only TCP address through `ANTIGRAVITY_MIC`,
+using the CLI's documented external microphone route. The listener rejects clients
+while disarmed and permits a single stream during a requested recording. Audio is
+kept in a bounded in-memory queue, and RMS/peak values are computed from those same
+bytes. A stalled stream is an error rather than an invitation to drop audio silently.
+Stopping capture drains already queued native callbacks and pending sends before
+provider finalization; cancellation invalidates the session and discards pending data.
+The protocol has no provider acknowledgement for individual audio frames, so a
+successful socket send is not recognition-completeness evidence.
+
+Authenticated `audio-status` IPC returns device metadata and numeric meter values,
+never audio or transcripts. The frontend polls on a background thread and marks stale
+meters unavailable. The HUD normally shows the microphone name without a changing
+volume judgement. Presentation-only attack/release smoothing steadies the bar; a low
+level must persist for eight seconds before a warning appears. Hysteresis and a
+minimum display time prevent rapid warning toggles. These are input-level indicators,
+not recognition-confidence scores. An AppKit tracking-mode timer keeps HUD expiry and meter updates
+running while an NSMenu is open. Recording actions are dispatched only after menu
+tracking returns, without activating the service or replacing the target app.
+
+The small settings window is activated only when the user opens Settings. Preferences
+are saved atomically; device/shortcut changes are disabled during capture/processing.
+The login checkbox enables/disables only this service's installed LaunchAgent. It
+does not stop the current recording or create another login item.
+
+Shortcut editing captures AppKit key events only inside the settings window. The
+frontend suspends its global trigger until editing finishes; Escape, window closure
+and focus loss discard the draft. Changes are saved atomically only on explicit Save.
+Modifier-only bindings are side-specific and trigger on release within 700 ms; another
+key, modifier, click, scroll or a longer hold invalidates the tap. Regular chords retain
+auto-repeat suppression. Turning the shortcut off keeps menu controls and Escape
+cancellation available. Existing presets load without losing their binding.
 
 ## Required behavior
 

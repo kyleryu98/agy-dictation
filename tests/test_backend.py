@@ -17,6 +17,12 @@ if sys.platform != "win32":
 
 @unittest.skipIf(sys.platform == "win32", "PTY backend is not yet ported to Windows")
 class BackendTests(unittest.TestCase):
+    def test_microphone_stream_is_limited_to_a_valid_loopback_port(self):
+        for address in ("example.invalid:1234", "0.0.0.0:1234", "127.0.0.1:0", "127.0.0.1:99999"):
+            with self.subTest(address=address), self.assertRaises(backend.BridgeError):
+                backend.CLI(audio_address=address)
+        self.assertEqual(backend.CLI(audio_address="127.0.0.1:1234").audio_address, "127.0.0.1:1234")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -4,7 +4,15 @@
 
 | Check | Result | Scope |
 | --- | --- | --- |
-| Unit suite | 167 tests passed | Native frameworks, microphone and typing are mocked |
+| Unit suite | 205 tests passed | Native capture, microphone and typing are mocked; transport tests use synthetic PCM on loopback |
+| Native custom shortcuts | Save/Enter, cancel, side-specific modifier, disable and reset passed | Synthetic AppKit events inside the settings window; global trigger suspension and modifier/chord separation are policy-tested |
+| Native menu/settings | Passed | Real AppKit controls with synthetic devices, private test preferences and fake login controls; no microphone, input listeners or login change |
+| Calm input feedback | Normal syllables/pauses keep a fixed label; low-volume warning waits eight seconds; isolated peaks do not flash warnings | Presentation smoothing only; no audio/provider changes |
+| Native PCM extraction | Exact bytes matched | Synthetic CoreMedia audio sample; no real capture |
+| Audio transport | Exact meter/provider bytes and final-buffer drain passed | Synthetic capture; device loss, failure, stale meter and previous-session callbacks covered |
+| Installed menu/audio helper | Started in `idle`; menu status item visible; input-device status responded | Tested source hashes matched; selected default microphone found; capture inactive at rest; no restart traceback |
+| Distribution packaging | Wheel and source distribution built; artifact privacy scan passed | Build artifacts only, not a standalone macOS release |
+| New capture path with real speech | Not yet accepted | Synthetic PCM checks do not prove AGY recognition or spoken tail completeness |
 | HUD regressions against the previous source | Four test groups failed, with seven failing cases; fixed source passes | Interrupted fade, repeated terminal status, ready-state dismissal and showing during display reconfiguration |
 | Native HUD lifecycle | 15 WindowServer/foreground checks passed | Isolated repository HUD; recording, processing, interrupted fade, repeated completion, cancellation, ready and error dismissal |
 | HUD render | Dark rounded fill and transparent corners passed | Offscreen render of the synthetic HUD only; no desktop capture |
@@ -36,6 +44,25 @@ install input listeners, type into applications, request permissions or change t
 installed copy. They verify foreground focus remains unchanged. The older tests
 only inspected Python state and mocked coordinates, which could pass while the
 actual macOS panel remained visible.
+
+The menu/settings check exercises actual AppKit controls, preference persistence,
+recording-time settings locks and menu-action deferral. The passive menu preserves
+foreground focus; opening Settings deliberately gives that window keyboard focus.
+The HUD remains non-key during editing and recording. A
+native CoreMedia sample built from synthetic PCM verifies the callback extraction
+format. The actual settings window was visually inspected through WindowServer
+capture; offscreen view caching does not render every modern native control reliably.
+Audio tests verify that the same bytes produce the meter and reach the socket, queued
+tail buffers drain at stop, and callbacks from an earlier recording cannot enter a
+later session. They never open a physical or virtual microphone.
+
+The subsequent installed menu/settings update was backed up before application. Its
+personal CLI/editor transport and input-insertion functions were preserved; the voice
+helper gained the capture coordinator and numeric/device status endpoint. Startup
+verification found the menu-bar item visible, the selected default device available,
+and capture inactive while idle. No physical/virtual microphone was opened for the
+automated checks. Real speech recognition and stop-time tail completeness through
+this new capture path remain manual acceptance gates.
 
 After the user explicitly authorized application and restart, both installed frontend
 files were backed up and replaced. The personal provider transport, input delivery,
@@ -102,6 +129,7 @@ The separate opt-in native HUD check briefly shows a non-activating synthetic HU
 
 ```sh
 .venv/bin/python scripts/check_hud.py
+.venv/bin/python scripts/check_menu.py
 ```
 
 It compares Python state, AppKit visibility and the actual WindowServer window

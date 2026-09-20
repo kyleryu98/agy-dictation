@@ -13,7 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from agy_dictation.config import BASE, LOG, ENGINE_APP, ENGINE_BUNDLE_ID, SERVICE_LABEL, AGY  # noqa: E402
+from agy_dictation.config import (  # noqa: E402
+    BASE, LOG, ENGINE_APP, ENGINE_BUNDLE_ID, SERVICE_LABEL, AGY, DISPLAY_NAME,
+)
 
 
 def runtime_settings():
@@ -94,8 +96,8 @@ def main(argv=None):
     info = {
         "CFBundleIdentifier": ENGINE_BUNDLE_ID,
         "CFBundleExecutable": "AGYVoiceEngine",
-        "CFBundleName": "ProListen Voice Engine",
-        "CFBundleDisplayName": "ProListen Voice Engine",
+        "CFBundleName": f"{DISPLAY_NAME} Voice Engine",
+        "CFBundleDisplayName": f"{DISPLAY_NAME} Voice Engine",
         "CFBundleVersion": "1",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundlePackageType": "APPL",

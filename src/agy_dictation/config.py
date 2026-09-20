@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .secure_files import ensure_private_dir as ensure_private_dir
 
+DISPLAY_NAME = "AGY Dictation"
+# Keep the existing storage namespace separate from the product's visible name.
 APP_NAME = "ProListenDictation"
 SERVICE_LABEL = "com.prolisten.agy-dictation"
 ENGINE_BUNDLE_ID = "com.prolisten.agy-voice-engine"

@@ -6,11 +6,24 @@ The user's official AGY CLI handles login and credentials. Do not include accoun
 
 Audio is processed through the official CLI's voice feature. The transcript passes through an external-editor callback and the wrapper to the target app. This project does not claim on-device transcription or offline-only processing. The official service's transmission, retention, and training policies are governed by the Google policies applicable to the user's account. This wrapper does not change those policies or guarantee data deletion.
 
+The voice helper captures the selected microphone only for a requested recording and
+sends in-memory PCM to the CLI through its `ANTIGRAVITY_MIC` loopback route. The listener
+binds only to `127.0.0.1` on an ephemeral port and rejects connections while disarmed.
+This audio transport does not authenticate TCP peers and must never be exposed through
+a tunnel or public bind address. Local processes are outside its isolation boundary.
+No raw audio is written to disk. RMS/peak measurements and device metadata travel over
+the existing private control IPC; the meters use the same audio supplied to the CLI.
+The microphone is stopped before provider finalization, on cancellation and on shutdown.
+
 Avoiding the clipboard removes one path that could leave a transcript there. It does not mean that no traces remain in memory, temporary files, internal CLI records, or the target app's documents and autosaves. Check the implementation and actual behavior for callback temporary-data locations, deletion timing, and leftovers after errors or forced termination. The rebuilt repository's file and response retention boundaries have undergone unit tests and code review. The CLI's own retention policies and clean-Mac end-to-end validation are separate matters. See the [security audit](security-audit.md).
 
 ## Local retention in the current source
 
 The default data directory is `~/Library/Application Support/ProListenDictation`; it can be changed with `AGY_DICTATION_DATA_DIR`. The external-editor callback delivers the transcript in `transcript.json`. Before insertion, the service writes `last-transcript.txt` and deletes it when the insertion result is confirmed in the target app. If insertion fails or cannot be verified, the transcript may remain in the recovery file; the user should delete it when it is no longer needed. The implementation checks file permissions of 0600, directory permissions of 0700, ownership, types, and links. It accepts only results with matching recording-session and single-use request identifiers, and cleans up exchange files on cancellation or error. It does not guarantee removal of all residual data after forced termination or power loss.
+
+`settings.json` contains the shortcut preset, sound preference and optionally a device
+UID. Device UIDs can identify attached hardware and must stay private. Login-startup
+state remains in launchd. Raw audio and meter history are not retained.
 
 Global key-down and mouse-press callbacks maintain only an in-memory activity
 counter, used to stop dictation if the user interacts during processing or input.

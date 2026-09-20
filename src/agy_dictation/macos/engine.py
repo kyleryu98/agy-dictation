@@ -2,6 +2,7 @@
 
 import fcntl
 import logging
+import json
 import os
 import secrets
 import signal
@@ -14,6 +15,9 @@ import CoreFoundation as CF
 import AVFoundation as AV
 import objc
 from ..cli_backend import CLI
+from ..audio_stream import MicrophoneStream
+from ..settings import Settings
+from ..voice_session import VoiceSession
 from ..config import BASE, LOG, ensure_private_dir
 from .. import ipc, secure_files as sf
 
@@ -25,6 +29,8 @@ def execute_command(command, cli, allowed, operation):
         return ""
     if command == "ping":
         return ""
+    if command == "audio-status":
+        return json.dumps(cli.audio_status(), ensure_ascii=False, allow_nan=False)
     if command != "reset" and not allowed:
         raise ipc.RemoteError("permission_required")
     if not operation.acquire(timeout=0.1):
@@ -47,6 +53,8 @@ def execute_command(command, cli, allowed, operation):
 
 
 def main():
+    from .audio import AudioCapture, input_devices, choose_input
+
     ensure_private_dir(BASE)
     ensure_private_dir(LOG)
     with sf.private_directory(BASE) as directory:
@@ -71,7 +79,10 @@ def main():
     )
     app = AK.NSApplication.sharedApplication()
     app.setActivationPolicy_(AK.NSApplicationActivationPolicyAccessory)
-    cli = CLI()
+    microphone = MicrophoneStream(AudioCapture)
+    cli = VoiceSession(
+        CLI(audio_address=microphone.address), microphone, Settings(BASE), input_devices, choose_input
+    )
     allowed = [False]
     auth = AV.AVCaptureDevice.authorizationStatusForMediaType_(AV.AVMediaTypeAudio)
     if auth == 3:
@@ -147,6 +158,7 @@ def main():
 
     def shutdown(*_):
         cli.close()
+        microphone.close()
         path = BASE / "engine.sock"
         try:
             info = path.lstat()

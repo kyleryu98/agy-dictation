@@ -8,6 +8,20 @@ Press a shortcut, speak, and insert the transcript at your cursor—with a recor
 - See recording time and processing status in a small overlay at the bottom of the screen.
 - Cancel with **Esc** or the overlay's × button.
 - Keep focus in your app, without switching windows or using the clipboard.
+- Use the menu-bar microphone icon for recording controls, device selection and Settings.
+- Record your own shortcut, configure sound cues and login startup, and see measured input levels while recording.
+
+Click the shortcut keycap or pencil, press your combination, then Save or Enter.
+Escape cancels; the trash button disables the shortcut; the reset icon restores
+Control + backtick. Function keys and left/right modifier-only taps are supported.
+Modifier-only bindings fire on a short solo release, not while using another key,
+clicking or scrolling. Global recording shortcuts are suspended during editing.
+
+The selected microphone is scoped to this app; the system default is unchanged.
+Meters are computed from the same PCM stream supplied to AGY through its external
+microphone route. Capture stops before finalization and remains off while idle.
+The settings UI and synthetic PCM transport are tested; real speech through this
+capture route still requires separate acceptance. See [validation](docs/testing.md).
 
 > **macOS developer preview.** Installation is from source. There is no standalone DMG, Windows support, or guarantee of compatibility with every app and input field. The current overlay text is in Korean; English documentation does not change the app's UI language.
 
@@ -60,7 +74,7 @@ Allow the Python app shown in the output under **System Settings → Privacy & S
 .venv/bin/python scripts/manage_macos.py status
 ```
 
-Approve **ProListen Voice Engine's microphone request** when it appears. If the service stopped before you granted permission, run `start --apply` again. Permissions are never granted automatically.
+Approve **AGY Dictation Voice Engine's microphone request** when it appears. If the service stopped before you granted permission, run `start --apply` again. Permissions are never granted automatically.
 
 ### 4. Try dictation
 
@@ -99,7 +113,7 @@ Without `--apply`, lifecycle commands only show a plan. `status`, `permissions`,
 | Helper build fails | Run `doctor.py --strict`; check the Python.org framework installation. |
 | Shortcut does nothing | Check Python's control permission, field focus, service status, and shortcut conflicts. |
 | Login or directory trust is required | Run `setup-cli --apply` and complete setup interactively. |
-| Microphone permission is required | Allow microphone access for ProListen Voice Engine, then restart. |
+| Microphone permission is required | Allow microphone access for AGY Dictation Voice Engine, then restart. |
 | Input target changed | Keep the same field focused and avoid editing its contents while recording. |
 | An existing installation is detected | Stop and uninstall that version first; do not overwrite files manually. |
 

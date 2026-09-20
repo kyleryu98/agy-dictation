@@ -44,6 +44,7 @@ RUNTIME_NAMES = {
     "engine-auth.json",
     "status.json",
     "hud-status.json",
+    "settings.json",
 }
 BINARY_SUFFIXES = {
     ".wav", ".mp3", ".aif", ".aiff", ".m4a", ".aac", ".caf", ".flac", ".ogg", ".opus",

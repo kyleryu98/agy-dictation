@@ -33,7 +33,14 @@ class BridgeError(RemoteError):
 
 
 class CLI:
-    def __init__(self):
+    def __init__(self, audio_address=None):
+        if audio_address is not None and (
+            not isinstance(audio_address, str)
+            or re.fullmatch(r"127\.0\.0\.1:[0-9]{1,5}", audio_address) is None
+            or not 0 < int(audio_address.rsplit(":", 1)[1]) <= 65535
+        ):
+            raise BridgeError("protocol_error")
+        self.audio_address = audio_address
         self.proc = None
         self.fd = None
         self.text = ""
@@ -145,6 +152,8 @@ class CLI:
             AGY_DICTATION_SESSION=self._session,
         )
         env["VISUAL"] = env["EDITOR"]
+        if self.audio_address is not None:
+            env["ANTIGRAVITY_MIC"] = self.audio_address
         env["PATH"] = os.pathsep.join(
             entry for entry in env.get("PATH", os.defpath).split(os.pathsep) if os.path.isabs(entry)
         )

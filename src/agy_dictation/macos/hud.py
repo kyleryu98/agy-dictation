@@ -1,10 +1,10 @@
 """Non-activating macOS dictation HUD. All UI work runs on the main thread."""
 
 import time
-import math
 import AppKit as A
 import Foundation as F
 import Quartz as Q
+from ..config import DISPLAY_NAME
 
 ACTIVE = {"connecting", "recording", "transcribing", "inserting", "cancelling"}
 
@@ -143,11 +143,12 @@ class DictationHUD:
         self.pending_show = False
         self.last_state = None
         self.screen_layout = None
+        self.shortcut_label = "Ctrl + ₩"
         style = A.NSWindowStyleMaskBorderless | A.NSWindowStyleMaskNonactivatingPanel
         self.panel = PassivePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             A.NSMakeRect(0, 0, 336, 88), style, A.NSBackingStoreBuffered, False
         )
-        self.panel.setTitle_("AGY 음성입력")
+        self.panel.setTitle_(DISPLAY_NAME)
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(A.NSColor.clearColor())
         self.panel.setHasShadow_(True)
@@ -214,6 +215,8 @@ class DictationHUD:
             self.hide()
             return
         title, subtitle, loading, color = model
+        if kind == "recording":
+            subtitle = self.shortcut_hint()
         colors = {
             "red": A.NSColor.systemRedColor(),
             "blue": A.NSColor.systemBlueColor(),
@@ -225,7 +228,12 @@ class DictationHUD:
         self.title.setStringValue_(title)
         self.subtitle.setStringValue_(subtitle)
         self.subtitle.setToolTip_(subtitle)
-        self.progress.setHidden_(not loading)
+        self.progress.setHidden_(not loading and kind != "recording")
+        self.progress.setIndeterminate_(loading)
+        if kind == "recording":
+            self.progress.setMinValue_(0)
+            self.progress.setMaxValue_(1)
+            self.progress.setDoubleValue_(0)
         if loading:
             self.progress.startAnimation_(None)
         else:
@@ -288,13 +296,27 @@ class DictationHUD:
         if self.kind == "recording":
             elapsed = int(now - self.started)
             self.timer.setStringValue_(f"{elapsed // 60:02d}:{elapsed % 60:02d}")
-            self.dot.layer().setOpacity_(0.65 + 0.35 * math.sin((now - self.started) * 3) ** 2)
-        else:
-            self.dot.layer().setOpacity_(1)
+        self.dot.layer().setOpacity_(1)
         if self.dismiss_at is not None:
             left = self.dismiss_at - now
             if left < 0.2:
                 self.panel.setAlphaValue_(left / 0.2)
+
+    def set_audio_status(self, audio):
+        if self.kind != "recording":
+            return
+        from .controls import level_text
+
+        self.progress.setDoubleValue_(audio.get("level", 0))
+        name = audio.get("input_name", "")
+        warning = audio.get("warning") or audio.get("error") or audio.get("selected_missing")
+        text = f"{name} · {level_text(audio)}" if name and warning else name or level_text(audio)
+        self.subtitle.setStringValue_(text)
+        self.subtitle.setToolTip_(text + " · " + self.shortcut_hint())
+
+    def shortcut_hint(self):
+        shortcut = getattr(self, "shortcut_label", "Ctrl + ₩")
+        return f"{shortcut}로 완료 · Esc로 취소" if shortcut else "상단 메뉴에서 완료 · Esc로 취소"
 
     def hide(self):
         self.progress.stopAnimation_(None)

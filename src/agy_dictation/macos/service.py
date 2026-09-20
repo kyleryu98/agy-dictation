@@ -13,13 +13,16 @@ import time
 from collections import deque
 import ApplicationServices as AX
 import AppKit as AK
+import Foundation as F
 import Quartz as Q
 import CoreFoundation as CF
 import objc
 from pynput import keyboard, mouse
 from .hud import DictationHUD, pump_events
-from ..config import BASE, LOG, ENGINE_APP, ENGINE_BOOTSTRAP, ensure_private_dir
+from ..config import BASE, LOG, ENGINE_APP, ENGINE_BOOTSTRAP, SERVICE_LABEL, ensure_private_dir
 from .. import ipc, secure_files as sf
+from ..settings import Preferences, Settings
+from ..shortcuts import ModifierTap
 
 CTRL = Q.kCGEventFlagMaskControl
 OTHER = Q.kCGEventFlagMaskCommand | Q.kCGEventFlagMaskAlternate | Q.kCGEventFlagMaskShift
@@ -35,6 +38,10 @@ status_view = ("starting", "")
 backend = None
 cancel_requested = threading.Event()
 input_generation = 0
+preferences = Preferences()
+quit_requested = threading.Event()
+shortcut_editing = threading.Event()
+modifier_tap = ModifierTap()
 
 
 class BridgeError(Exception):
@@ -104,7 +111,7 @@ def notify(message):
         [
             "/usr/bin/osascript",
             "-e",
-            'on run argv\ndisplay notification (item 1 of argv) with title "AGY 음성입력"\nend run',
+            'on run argv\ndisplay notification (item 1 of argv) with title "AGY Dictation"\nend run',
             message,
         ],
         stdout=subprocess.DEVNULL,
@@ -113,6 +120,8 @@ def notify(message):
 
 
 def beep(name):
+    if not preferences.sounds:
+        return
     subprocess.Popen(
         ["/usr/bin/afplay", f"/System/Library/Sounds/{name}.aiff"],
         stdout=subprocess.DEVNULL,
@@ -473,7 +482,14 @@ def worker():
         action = ops.get()
         with objc.autorelease_pool():
             try:
-                if action == "cancel":
+                if quit_requested.is_set():
+                    return
+                if action == "restart":
+                    status("starting", "음성 엔진을 다시 시작하고 있어요")
+                    backend.close()
+                    backend.start()
+                    status("idle", "준비됨")
+                elif action == "cancel":
                     backend.cancel()
                     session = None
                     status("idle", "녹음을 취소했습니다.")
@@ -546,6 +562,8 @@ def worker():
 
 def trigger(action="toggle"):
     global busy, last_trigger
+    if quit_requested.is_set():
+        return
     if action == "cancel":
         cancel_requested.set()
         with mutex:
@@ -558,6 +576,8 @@ def trigger(action="toggle"):
             threading.Thread(target=backend.cancel, daemon=True).start()
         return
     with mutex:
+        if action == "restart" and session is not None:
+            return
         if busy or time.monotonic() - last_trigger < 0.4:
             return
         busy = True
@@ -575,6 +595,7 @@ def note_input_activity():
 
 def mouse_click(x, y, button, pressed, injected=False):
     if pressed:
+        modifier_tap.reset()
         note_input_activity()
 
 
@@ -583,7 +604,23 @@ def intercept(kind, event):
         return event
     code = Q.CGEventGetIntegerValueField(event, Q.kCGKeyboardEventKeycode)
     flags = Q.CGEventGetFlags(event)
-    match = code in HOTKEY_CODES and flags & CTRL and not flags & OTHER
+    if shortcut_editing.is_set():
+        modifier_tap.reset()
+        return event
+    binding = preferences.binding
+    modifier_flags = {
+        "control": CTRL, "option": Q.kCGEventFlagMaskAlternate,
+        "shift": Q.kCGEventFlagMaskShift, "command": Q.kCGEventFlagMaskCommand,
+    }
+    held_modifiers = {name for name, flag in modifier_flags.items() if flags & flag}
+    event_kind = "flags" if kind == Q.kCGEventFlagsChanged else "up" if kind == Q.kCGEventKeyUp else "down"
+    tap_modifiers = held_modifiers | ({"function"} if flags & Q.kCGEventFlagMaskSecondaryFn else set())
+    if modifier_tap.feed(binding, event_kind, code, tap_modifiers, time.monotonic()):
+        trigger()
+    match = (
+        binding is not None and not binding.modifier_only
+        and code in preferences.shortcut_codes and held_modifiers == set(binding.modifiers)
+    )
     cancel = (
         code == 53
         and (session is not None or status_view[0] in ("connecting", "transcribing", "inserting"))
@@ -602,10 +639,12 @@ def intercept(kind, event):
     return event
 
 
-def run_ui(app, hud, keep_running):
+def run_ui(app, hud, keep_running, menu=None, audio=None):
     previous = None
     previous_hud = None
-    while keep_running():
+
+    def refresh():
+        nonlocal previous, previous_hud
         with objc.autorelease_pool():
             # The worker may publish another status while update() is running.
             # Only acknowledge the exact snapshot actually sent to the HUD.
@@ -613,8 +652,13 @@ def run_ui(app, hud, keep_running):
             if current != previous:
                 hud.update(*current)
                 previous = current
+                if audio is not None:
+                    audio.request_refresh()
             hud.tick()
-            pump_events(app)
+            if audio is not None:
+                snapshot = audio.snapshot()
+                hud.set_audio_status(snapshot)
+                menu.update(current[0], snapshot)
             hud_state = (hud.visible, hud.kind)
             if hud_state != previous_hud:
                 with sf.private_directory(BASE) as directory:
@@ -625,14 +669,36 @@ def run_ui(app, hud, keep_running):
                             "visible": hud.visible,
                             "state": hud.kind,
                             "key_window": bool(hud.panel.isKeyWindow()),
+                            "menu_bar_visible": bool(menu is not None and menu.item.isVisible()),
                             "time": time.time(),
                         },
                     )
                 previous_hud = hud_state
+    timer = None
+    if menu is not None:
+        # NSMenu runs a nested tracking loop; its timer must keep HUD deadlines
+        # and live meters progressing while the menu remains open.
+        def tracking_tick(_):
+            refresh()
+            app.updateWindows()
+
+        timer = F.NSTimer.timerWithTimeInterval_repeats_block_(0.1, True, tracking_tick)
+        F.NSRunLoop.currentRunLoop().addTimer_forMode_(timer, AK.NSEventTrackingRunLoopMode)
+    try:
+        while keep_running():
+            refresh()
+            pump_events(app)
+            if menu is not None:
+                menu.perform_pending()
+    finally:
+        if timer is not None:
+            timer.invalidate()
 
 
 def main():
-    global backend
+    global backend, preferences
+    from .menu import MenuBar
+    from .controls import AudioStatus, LaunchAtLogin
     ensure_private_dir(BASE)
     ensure_private_dir(LOG)
     with sf.private_directory(BASE) as directory:
@@ -662,9 +728,40 @@ def main():
     AK.NSWorkspace.sharedWorkspace()
     hud = DictationHUD(lambda: trigger("cancel"))
     backend = CLI()
+    settings = Settings(BASE)
+    try:
+        preferences = settings.load()
+    except (OSError, ValueError):
+        logging.warning("settings unavailable; defaults used")
+    hud.shortcut_label = preferences.shortcut_label
+
+    def changed(value):
+        global preferences
+        preferences = value
+        hud.shortcut_label = value.shortcut_label
+        audio.request_refresh()
+
+    def dispatch(action):
+        if action == "quit":
+            quit_requested.set()
+        else:
+            trigger(action)
+
+    def capture_shortcut(active):
+        modifier_tap.reset()
+        pressed.clear()
+        if active:
+            shortcut_editing.set()
+        else:
+            shortcut_editing.clear()
+
+    menu = MenuBar(settings, LaunchAtLogin(SERVICE_LABEL), dispatch, changed, capture_shortcut)
+    audio = AudioStatus(lambda: backend.request("audio-status", 1))
+    audio.start()
     status("starting", "AGY CLI 준비 중")
 
     def shutdown(*_):
+        quit_requested.set()
         backend.close()
         sys.exit(0)
 
@@ -674,15 +771,26 @@ def main():
     listener = keyboard.Listener(darwin_intercept=intercept)
     listener.start()
     listener.wait()
-    pointer = mouse.Listener(on_click=mouse_click)
+    pointer = mouse.Listener(on_click=mouse_click, on_scroll=lambda *_: modifier_tap.reset())
     pointer.start()
     pointer.wait()
     try:
-        run_ui(app, hud, lambda: listener.is_alive() and pointer.is_alive())
+        run_ui(
+            app, hud,
+            lambda: listener.is_alive() and pointer.is_alive() and not quit_requested.is_set(),
+            menu, audio,
+        )
     finally:
+        menu.close()
+        audio.close()
+        hud.hide()
         listener.stop()
         pointer.stop()
-        backend.close()
+        if quit_requested.is_set():
+            if not backend.shutdown():
+                backend.close()
+        else:
+            backend.close()
     return 0
 
 

@@ -3,7 +3,7 @@ import queue
 import sys
 import threading
 import unittest
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -27,8 +27,10 @@ if sys.platform != "win32":
         "kCGEventFlagMaskCommand": 2,
         "kCGEventFlagMaskAlternate": 4,
         "kCGEventFlagMaskShift": 8,
+        "kCGEventFlagMaskSecondaryFn": 16,
         "kCGEventKeyDown": 10,
         "kCGEventKeyUp": 11,
+        "kCGEventFlagsChanged": 12,
         "kCGEventSourceUserData": 42,
     }.items():
         setattr(quartz, name, number)
@@ -309,8 +311,41 @@ class MacOSTests(unittest.TestCase):
         self.assertEqual(view.tick.call_count, 3)
         self.assertEqual(pump.call_count, 3)
 
+    def test_menu_tracking_timer_keeps_completion_deadline_running(self):
+        view = self.hud_view()
+        app, menu, audio, foundation = Mock(), Mock(), Mock(), Mock()
+        audio.snapshot.return_value = {}
+        timer_callbacks = []
+        foundation.NSTimer.timerWithTimeInterval_repeats_block_.side_effect = (
+            lambda interval, repeats, callback: timer_callbacks.append(callback) or Mock()
+        )
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", return_value=True),
+            patch.object(hud.time, "monotonic", return_value=10) as now,
+            patch.object(b, "F", foundation),
+            patch.object(b, "AK", Mock()),
+            patch.object(b, "status_view", ("idle", "입력 완료")),
+            patch.object(b.sf, "private_directory", return_value=nullcontext(1)),
+            patch.object(b.sf, "atomic_write_json"),
+        ):
+            def track(_):
+                # sendEvent is inside NSMenu's nested tracking loop at this point.
+                now.return_value = 11
+                timer_callbacks[0](None)
+
+            with patch.object(b, "pump_events", side_effect=track):
+                b.run_ui(app, view, Mock(side_effect=[True, False]), menu, audio)
+        self.assertFalse(view.visible)
+        view.panel.orderOut_.assert_called_once()
+        app.updateWindows.assert_called_once()
+        menu.perform_pending.assert_called_once()
+
     def setUp(self):
         b.pressed.clear()
+        b.shortcut_editing.clear()
+        b.quit_requested.clear()
+        b.modifier_tap.reset()
         b.session = None
         b.cancel_requested.clear()
         b.busy = False
@@ -340,6 +375,90 @@ class MacOSTests(unittest.TestCase):
                 self.assertIsNone(b.intercept(b.Q.kCGEventKeyDown, code))
                 self.assertIsNone(b.intercept(b.Q.kCGEventKeyUp, code))
             self.assertEqual(fire.call_count, 2)
+
+    def test_configured_hotkey_replaces_the_old_binding(self):
+        with (
+            patch.object(b, "preferences", b.Preferences(shortcut="ctrl_option_d")),
+            patch.object(b, "trigger") as fire,
+            patch.object(b.Q, "CGEventGetIntegerValueField", side_effect=lambda e, _: e),
+            patch.object(b.Q, "CGEventGetFlags", return_value=b.CTRL | b.Q.kCGEventFlagMaskAlternate),
+        ):
+            self.assertIsNone(b.intercept(b.Q.kCGEventKeyDown, 2))
+            fire.assert_called_once()
+            fire.reset_mock()
+            b.intercept(b.Q.kCGEventKeyDown, 50)
+            fire.assert_not_called()
+
+    def test_disabled_sounds_do_not_spawn_audio_player(self):
+        with patch.object(b, "preferences", b.Preferences(sounds=False)), patch.object(
+            b.subprocess, "Popen"
+        ) as player:
+            b.beep("Pop")
+        player.assert_not_called()
+
+    def test_shortcut_capture_never_starts_recording(self):
+        b.shortcut_editing.set()
+        with (
+            patch.object(b, "trigger") as fire,
+            patch.object(b.Q, "CGEventGetIntegerValueField", side_effect=lambda e, _: e),
+            patch.object(b.Q, "CGEventGetFlags", return_value=b.CTRL),
+        ):
+            self.assertEqual(b.intercept(b.Q.kCGEventKeyDown, 50), 50)
+        fire.assert_not_called()
+
+    def test_quitting_never_queues_a_new_recording(self):
+        b.quit_requested.set()
+        b.trigger()
+        self.assertTrue(b.ops.empty())
+        self.assertFalse(b.busy)
+
+    def test_custom_command_shortcut_and_disabled_state(self):
+        binding = {"key_code": 2, "modifiers": ["command", "shift"], "key_label": "D"}
+        with (
+            patch.object(b, "preferences", b.Preferences(shortcut="custom", custom_shortcut=binding)),
+            patch.object(b, "trigger") as fire,
+            patch.object(b.Q, "CGEventGetIntegerValueField", side_effect=lambda e, _: e),
+            patch.object(b.Q, "CGEventGetFlags", return_value=b.Q.kCGEventFlagMaskCommand | b.Q.kCGEventFlagMaskShift),
+        ):
+            self.assertIsNone(b.intercept(b.Q.kCGEventKeyDown, 2))
+            self.assertIsNone(b.intercept(b.Q.kCGEventKeyUp, 2))
+            fire.assert_called_once()
+            fire.reset_mock()
+            with patch.object(b, "preferences", b.Preferences(shortcut="disabled")):
+                self.assertEqual(b.intercept(b.Q.kCGEventKeyDown, 2), 2)
+            fire.assert_not_called()
+
+    def test_modifier_only_shortcut_fires_after_a_solo_release(self):
+        binding = {"key_code": 55, "modifiers": [], "key_label": "왼쪽 ⌘"}
+        with (
+            patch.object(b, "preferences", b.Preferences(shortcut="custom", custom_shortcut=binding)),
+            patch.object(b, "trigger") as fire,
+            patch.object(b.Q, "CGEventGetIntegerValueField", side_effect=lambda e, _: e),
+            patch.object(b.Q, "CGEventGetFlags", return_value=b.Q.kCGEventFlagMaskCommand) as flags,
+            patch.object(b.time, "monotonic", return_value=10) as now,
+        ):
+            b.intercept(b.Q.kCGEventFlagsChanged, 55)
+            fire.assert_not_called()
+            flags.return_value = 0
+            now.return_value = 10.2
+            b.intercept(b.Q.kCGEventFlagsChanged, 55)
+            fire.assert_called_once()
+            fire.reset_mock()
+            flags.return_value = b.Q.kCGEventFlagMaskCommand
+            b.intercept(b.Q.kCGEventFlagsChanged, 55)
+            b.intercept(b.Q.kCGEventKeyDown, 8)
+            flags.return_value = 0
+            b.intercept(b.Q.kCGEventFlagsChanged, 55)
+            fire.assert_not_called()
+
+    def test_audio_status_remains_readable_during_recording_without_operation_lock(self):
+        cli = Mock()
+        cli.audio_status.return_value = {"recording": True, "level": 0.4}
+        lock = threading.Lock()
+        with lock:
+            result = engine.execute_command("audio-status", cli, False, lock)
+        self.assertIn('"level": 0.4', result)
+        cli.begin.assert_not_called()
 
     def test_cancel_within_toggle_debounce_is_queued(self):
         b.last_trigger = 10
@@ -595,31 +714,35 @@ class MacOSTests(unittest.TestCase):
             self.assertEqual(reply, {"ok": True, "text": ""})
             events.append("acknowledged")
 
-        with (
-            patch.object(engine, "BASE", base),
-            patch.object(engine, "sf", files),
-            patch.object(engine, "ensure_private_dir"),
-            patch.object(engine, "CLI", return_value=cli),
-            patch.object(engine, "AK", MagicMock()),
-            patch.object(engine, "logging", Mock()),
-            patch.object(engine.fcntl, "flock"),
-            patch.object(engine.os, "fdopen"),
-            patch.object(engine.os, "close"),
-            patch.object(engine.os, "chmod"),
-            patch.object(engine.signal, "signal"),
-            patch.object(engine.secrets, "token_hex", return_value=token),
-            patch.object(engine.socket, "socket", return_value=server),
-            patch.object(engine.threading, "Thread", side_effect=thread),
-            patch.object(engine.CF, "CFRunLoopRunInMode", side_effect=run_loop),
-            patch.object(
-                engine.AV.AVCaptureDevice, "authorizationStatusForMediaType_", return_value=0
-            ),
-            patch.object(engine.ipc, "require_same_user"),
-            patch.object(
-                engine.ipc, "receive", return_value={"command": "shutdown", "token": token}
-            ),
-            patch.object(engine.ipc, "send", side_effect=sent),
-        ):
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(engine, "BASE", base),
+                patch.object(engine, "sf", files),
+                patch.object(engine, "ensure_private_dir"),
+                patch.object(engine, "CLI", return_value=cli),
+                patch.object(engine, "MicrophoneStream", return_value=Mock()),
+                patch.dict(sys.modules, {"agy_dictation.macos.audio": Mock()}),
+                patch.object(engine, "AK", MagicMock()),
+                patch.object(engine, "logging", Mock()),
+                patch.object(engine.fcntl, "flock"),
+                patch.object(engine.os, "fdopen"),
+                patch.object(engine.os, "close"),
+                patch.object(engine.os, "chmod"),
+                patch.object(engine.signal, "signal"),
+                patch.object(engine.secrets, "token_hex", return_value=token),
+                patch.object(engine.socket, "socket", return_value=server),
+                patch.object(engine.threading, "Thread", side_effect=thread),
+                patch.object(engine.CF, "CFRunLoopRunInMode", side_effect=run_loop),
+                patch.object(
+                    engine.AV.AVCaptureDevice, "authorizationStatusForMediaType_", return_value=0
+                ),
+                patch.object(engine.ipc, "require_same_user"),
+                patch.object(
+                    engine.ipc, "receive", return_value={"command": "shutdown", "token": token}
+                ),
+                patch.object(engine.ipc, "send", side_effect=sent),
+            ):
+                stack.enter_context(patcher)
             with self.assertRaises(SystemExit) as exited:
                 engine.main()
         self.assertEqual(exited.exception.code, 0)

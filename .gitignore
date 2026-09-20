@@ -25,6 +25,7 @@ transcript*.json
 last-transcript.txt
 status.json
 hud-status.json
+settings.json
 *.wav
 *.aiff
 *.aif

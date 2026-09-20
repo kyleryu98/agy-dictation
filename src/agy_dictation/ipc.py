@@ -10,11 +10,13 @@ import struct
 import time
 import unicodedata
 
-COMMANDS = frozenset({"ping", "start", "begin", "finish", "cancel", "reset", "shutdown"})
+COMMANDS = frozenset({"ping", "start", "begin", "finish", "cancel", "reset", "shutdown", "audio-status"})
 MAX_REQUEST = 4096
 MAX_RESPONSE = 262144
 MAX_TRANSCRIPT = 32768
 ERRORS = {
+    "microphone_missing": "선택한 마이크가 연결되지 않았어요. 메뉴에서 마이크를 확인해 주세요.",
+    "audio_stream_failed": "마이크 입력을 확인하지 못했어요. 연결을 확인하고 다시 녹음해 주세요.",
     "permission_required": "음성 엔진에 마이크 권한을 허용해 주세요.",
     "busy": "음성 엔진이 다른 요청을 처리 중입니다. 잠시 후 다시 시도해 주세요.",
     "cancelled": "녹음을 취소했습니다.",
