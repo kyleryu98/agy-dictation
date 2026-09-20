@@ -54,30 +54,49 @@ if sys.platform != "win32":
 
 @unittest.skipIf(sys.platform == "win32", "POSIX service policy")
 class MacOSTests(unittest.TestCase):
-    def test_visible_hud_moves_back_after_external_display_disconnects(self):
-        def rect(x, y, width, height):
-            return SimpleNamespace(
-                origin=SimpleNamespace(x=x, y=y),
-                size=SimpleNamespace(width=width, height=height),
-            )
+    def hud_view(self):
+        view = hud.DictationHUD.__new__(hud.DictationHUD)
+        view.kind = None
+        view.last_state = None
+        view.started = 0
+        view.dismiss_at = None
+        view.visible = False
+        view.pending_show = False
+        view.screen_layout = None
+        for name in ("panel", "dot", "title", "subtitle", "progress", "timer", "close"):
+            setattr(view, name, Mock())
+        view.panel.frame.return_value = self.rect(0, 0, 336, 88)
+        return view
 
-        laptop = Mock()
-        laptop.visibleFrame.return_value = rect(0, 40, 1512, 900)
-        external = Mock()
-        external.visibleFrame.return_value = rect(-2560, 0, 2560, 1400)
+    @staticmethod
+    def rect(x, y, width, height):
+        return SimpleNamespace(
+            origin=SimpleNamespace(x=x, y=y),
+            size=SimpleNamespace(width=width, height=height),
+        )
+
+    def screen(self, number, frame, visible=None, scale=2):
+        screen = Mock()
+        screen.deviceDescription.return_value = {"NSScreenNumber": number}
+        screen.frame.return_value = self.rect(*frame)
+        screen.visibleFrame.return_value = self.rect(*(visible or frame))
+        screen.backingScaleFactor.return_value = scale
+        return screen
+
+    def test_visible_hud_moves_back_after_external_display_disconnects(self):
+        laptop = self.screen(1, (0, 0, 1512, 982), (0, 40, 1512, 900))
+        external = self.screen(2, (-2560, 0, 2560, 1440), (-2560, 0, 2560, 1400))
         native = Mock()
         native.NSMakePoint.side_effect = lambda x, y: (x, y)
         native.NSScreen.screens.return_value = [laptop, external]
         native.NSScreen.mainScreen.return_value = external
-        view = hud.DictationHUD.__new__(hud.DictationHUD)
-        view.panel = Mock()
-        view.panel.frame.return_value = rect(0, 0, 336, 88)
-        view.screen_layout = None
+        view = self.hud_view()
         view.visible = True
         view.kind = "transcribing"
-        view.dot = Mock()
-        view.dismiss_at = None
-        with patch.object(hud, "A", native):
+        with (
+            patch.object(hud, "A", native),
+            patch.object(hud, "interaction_screen", side_effect=lambda screens: screens[-1]),
+        ):
             view.tick()
             view.panel.setFrameOrigin_.assert_called_once_with((-1448, 20))
             view.panel.setFrameOrigin_.reset_mock()
@@ -88,29 +107,207 @@ class MacOSTests(unittest.TestCase):
             view.tick()
             view.panel.setFrameOrigin_.assert_called_once_with((588, 60))
             view.panel.makeKeyAndOrderFront_.assert_not_called()
+            native.NSScreen.mainScreen.assert_not_called()
 
     def test_hud_recovers_from_transient_empty_screen_list(self):
-        view = hud.DictationHUD.__new__(hud.DictationHUD)
-        view.panel = Mock()
-        view.panel.frame.return_value = SimpleNamespace(
-            size=SimpleNamespace(width=336, height=88)
-        )
+        view = self.hud_view()
         view.screen_layout = ((0, 0, 1000, 800),)
         native = Mock()
         native.NSMakePoint.side_effect = lambda x, y: (x, y)
         native.NSScreen.screens.return_value = []
-        with patch.object(hud, "A", native):
+        with (
+            patch.object(hud, "A", native),
+            patch.object(hud, "interaction_screen", side_effect=lambda screens: screens[0]),
+        ):
             self.assertFalse(view.place_on_screen())
             view.panel.setFrameOrigin_.assert_not_called()
-            screen = Mock()
-            screen.visibleFrame.return_value = SimpleNamespace(
-                origin=SimpleNamespace(x=0, y=0),
-                size=SimpleNamespace(width=1000, height=800),
-            )
+            screen = self.screen(1, (0, 0, 1000, 800))
             native.NSScreen.screens.return_value = [screen]
             native.NSScreen.mainScreen.return_value = None
             self.assertTrue(view.place_on_screen())
             view.panel.setFrameOrigin_.assert_called_once_with((332, 20))
+
+    def test_hud_new_recording_restores_opacity_during_completion_fade(self):
+        view = self.hud_view()
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", return_value=True),
+            patch.object(hud.time, "monotonic", return_value=10) as now,
+        ):
+            view.update("idle", "입력 완료")
+            now.return_value = 10.75
+            view.tick()
+            self.assertAlmostEqual(view.panel.setAlphaValue_.call_args.args[0], 0.5)
+            view.update("recording")
+            view.panel.setAlphaValue_.assert_called_with(1)
+            self.assertIsNone(view.dismiss_at)
+            now.return_value = 12
+            view.tick()
+            self.assertTrue(view.visible)
+            view.panel.orderOut_.assert_not_called()
+
+    def test_hud_terminal_states_expire_even_with_repeated_status_updates(self):
+        for state, detail, lifetime in (
+            ("idle", "입력 완료", 0.85),
+            ("idle", "녹음을 취소했습니다.", 0.85),
+            ("error", "synthetic failure", 6),
+        ):
+            with self.subTest(state=state, detail=detail):
+                view = self.hud_view()
+                with (
+                    patch.object(hud, "A", Mock()),
+                    patch.object(view, "place_on_screen", return_value=True),
+                    patch.object(hud.time, "monotonic", return_value=10) as now,
+                ):
+                    view.update(state, detail)
+                    now.return_value = 10 + lifetime / 2
+                    view.update(state, detail)
+                    self.assertEqual(view.dismiss_at, 10 + lifetime)
+                    now.return_value = 10 + lifetime + 0.1
+                    view.update(state, detail)
+                    self.assertFalse(view.visible)
+                    view.panel.orderOut_.assert_called_once()
+                    view.update(state, detail)
+                    self.assertFalse(view.visible)
+
+    def test_hud_ready_or_unrecognized_status_clears_active_window(self):
+        for state, detail in (("idle", "준비됨"), ("permission_required", "")):
+            with self.subTest(state=state):
+                view = self.hud_view()
+                with (
+                    patch.object(hud, "A", Mock()),
+                    patch.object(view, "place_on_screen", return_value=True),
+                ):
+                    view.update("transcribing")
+                    view.update(state, detail)
+                self.assertFalse(view.visible)
+                self.assertFalse(view.pending_show)
+                view.panel.orderOut_.assert_called_once()
+                view.progress.stopAnimation_.assert_called()
+
+    def test_hud_recording_reappears_after_show_during_empty_screen_list(self):
+        view = self.hud_view()
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", side_effect=[False, True]),
+        ):
+            view.update("recording")
+            self.assertFalse(view.visible)
+            self.assertTrue(view.pending_show)
+            view.tick()
+            self.assertTrue(view.visible)
+            self.assertFalse(view.pending_show)
+            view.panel.orderFrontRegardless.assert_called_once()
+
+    def test_hud_completion_expires_without_waiting_for_display_recovery(self):
+        view = self.hud_view()
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", return_value=False) as place,
+            patch.object(hud.time, "monotonic", return_value=10) as now,
+        ):
+            view.update("idle", "입력 완료")
+            self.assertTrue(view.pending_show)
+            now.return_value = 11
+            view.tick()
+            self.assertFalse(view.pending_show)
+            place.return_value = True
+            view.tick()
+            view.panel.orderFrontRegardless.assert_not_called()
+
+    def test_hud_repositions_on_scale_identity_and_dock_changes(self):
+        view = self.hud_view()
+        screen = self.screen(1, (0, 0, 1920, 1080))
+        native = Mock()
+        native.NSMakePoint.side_effect = lambda x, y: (x, y)
+        native.NSScreen.screens.return_value = [screen]
+        with (
+            patch.object(hud, "A", native),
+            patch.object(hud, "interaction_screen", return_value=screen) as choose,
+        ):
+            view.place_on_screen()
+            screen.backingScaleFactor.return_value = 1
+            view.place_on_screen()
+            screen.deviceDescription.return_value = {"NSScreenNumber": 2}
+            view.place_on_screen()
+            screen.visibleFrame.return_value = self.rect(70, 0, 1850, 1080)
+            view.place_on_screen()
+            self.assertEqual(choose.call_count, 4)
+            view.panel.setFrameOrigin_.assert_called_with((827, 20))
+            view.place_on_screen()
+            self.assertEqual(choose.call_count, 4)
+
+    def test_hud_uses_foreground_window_in_quartz_coordinates(self):
+        primary = self.screen(1, (0, 0, 1512, 982))
+        native = Mock()
+        native.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier.return_value = 7
+        native.NSEvent.mouseLocation.return_value = SimpleNamespace(x=50, y=50)
+        quartz = SimpleNamespace(
+            kCGWindowListOptionOnScreenOnly=1, kCGWindowListExcludeDesktopElements=2,
+            kCGNullWindowID=0, kCGWindowOwnerPID="pid", kCGWindowLayer="layer",
+            kCGWindowBounds="bounds", CGWindowListCopyWindowInfo=Mock(),
+        )
+        # Left, right, above, below, then a window straddling two displays.
+        for frame, bounds in (
+            ((-2560, 0, 2560, 1440), (-2300, -200, 1800, 1000)),
+            ((1512, 0, 1920, 1080), (1700, 100, 1200, 700)),
+            ((0, 982, 1920, 1080), (100, -900, 1400, 800)),
+            ((0, -1080, 1920, 1080), (100, 1100, 1400, 800)),
+            ((1512, 0, 1920, 1080), (1400, 100, 1200, 700)),
+        ):
+            with self.subTest(frame=frame, bounds=bounds):
+                external = self.screen(2, frame)
+                quartz.CGWindowListCopyWindowInfo.return_value = [
+                    {"pid": 8, "layer": 0}, {"pid": 7, "layer": 3},
+                    {"pid": 7, "layer": 0, "bounds": dict(zip(
+                        ("X", "Y", "Width", "Height"), bounds
+                    ))},
+                ]
+                with patch.object(hud, "A", native), patch.object(hud, "Q", quartz):
+                    self.assertIs(hud.interaction_screen([primary, external]), external)
+
+    def test_hud_screen_falls_back_to_pointer_without_window_metadata(self):
+        primary = self.screen(1, (0, 0, 1512, 982))
+        external = self.screen(2, (-2560, 0, 2560, 1440))
+        native = Mock()
+        native.NSWorkspace.sharedWorkspace().frontmostApplication.return_value = None
+        native.NSEvent.mouseLocation.return_value = SimpleNamespace(x=-500, y=50)
+        with patch.object(hud, "A", native):
+            self.assertIs(hud.interaction_screen([primary, external]), external)
+            native.NSEvent.mouseLocation.return_value = SimpleNamespace(x=9000, y=9000)
+            self.assertIs(hud.interaction_screen([primary, external]), primary)
+
+    def test_appkit_pump_dispatches_events_and_updates_windows_without_events(self):
+        app = Mock()
+        event = object()
+        app.nextEventMatchingMask_untilDate_inMode_dequeue_.side_effect = [event, None]
+        with patch.object(hud, "A", Mock()), patch.object(hud, "F", Mock()):
+            hud.pump_events(app)
+            hud.pump_events(app)
+        app.sendEvent_.assert_called_once_with(event)
+        self.assertEqual(app.updateWindows.call_count, 2)
+        self.assertLess(
+            app.mock_calls.index(unittest.mock.call.sendEvent_(event)),
+            app.mock_calls.index(unittest.mock.call.updateWindows()),
+        )
+
+    def test_ui_loop_does_not_drop_a_status_published_during_rendering(self):
+        view = self.hud_view()
+        view.update = Mock(side_effect=lambda *_: setattr(b, "status_view", ("idle", "입력 완료")))
+        view.tick = Mock()
+        app = Mock()
+        with (
+            patch.object(b, "status_view", ("inserting", "")),
+            patch.object(b, "pump_events") as pump,
+            patch.object(b.sf, "private_directory", return_value=nullcontext(1)),
+            patch.object(b.sf, "atomic_write_json"),
+        ):
+            b.run_ui(app, view, Mock(side_effect=[True, True, True, False]))
+        self.assertEqual(view.update.call_args_list, [
+            unittest.mock.call("inserting", ""), unittest.mock.call("idle", "입력 완료"),
+        ])
+        self.assertEqual(view.tick.call_count, 3)
+        self.assertEqual(pump.call_count, 3)
 
     def setUp(self):
         b.pressed.clear()

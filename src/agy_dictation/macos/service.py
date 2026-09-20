@@ -17,7 +17,7 @@ import Quartz as Q
 import CoreFoundation as CF
 import objc
 from pynput import keyboard, mouse
-from .hud import DictationHUD
+from .hud import DictationHUD, pump_events
 from ..config import BASE, LOG, ENGINE_APP, ENGINE_BOOTSTRAP, ensure_private_dir
 from .. import ipc, secure_files as sf
 
@@ -602,6 +602,35 @@ def intercept(kind, event):
     return event
 
 
+def run_ui(app, hud, keep_running):
+    previous = None
+    previous_hud = None
+    while keep_running():
+        with objc.autorelease_pool():
+            # The worker may publish another status while update() is running.
+            # Only acknowledge the exact snapshot actually sent to the HUD.
+            current = status_view
+            if current != previous:
+                hud.update(*current)
+                previous = current
+            hud.tick()
+            pump_events(app)
+            hud_state = (hud.visible, hud.kind)
+            if hud_state != previous_hud:
+                with sf.private_directory(BASE) as directory:
+                    sf.atomic_write_json(
+                        directory,
+                        "hud-status.json",
+                        {
+                            "visible": hud.visible,
+                            "state": hud.kind,
+                            "key_window": bool(hud.panel.isKeyWindow()),
+                            "time": time.time(),
+                        },
+                    )
+                previous_hud = hud_state
+
+
 def main():
     global backend
     ensure_private_dir(BASE)
@@ -629,6 +658,7 @@ def main():
         return 0
     app = AK.NSApplication.sharedApplication()
     app.setActivationPolicy_(AK.NSApplicationActivationPolicyAccessory)
+    app.finishLaunching()
     AK.NSWorkspace.sharedWorkspace()
     hud = DictationHUD(lambda: trigger("cancel"))
     backend = CLI()
@@ -647,30 +677,8 @@ def main():
     pointer = mouse.Listener(on_click=mouse_click)
     pointer.start()
     pointer.wait()
-    previous = None
-    previous_hud = None
     try:
-        while listener.is_alive() and pointer.is_alive():
-            if status_view != previous:
-                kind, detail = status_view
-                hud.update(kind, detail)
-                previous = status_view
-            hud.tick()
-            hud_state = (hud.visible, hud.kind)
-            if hud_state != previous_hud:
-                with sf.private_directory(BASE) as directory:
-                    sf.atomic_write_json(
-                        directory,
-                        "hud-status.json",
-                        {
-                            "visible": hud.visible,
-                            "state": hud.kind,
-                            "key_window": bool(hud.panel.isKeyWindow()),
-                            "time": time.time(),
-                        },
-                    )
-                previous_hud = hud_state
-            CF.CFRunLoopRunInMode(CF.kCFRunLoopDefaultMode, 0.1, False)
+        run_ui(app, hud, lambda: listener.is_alive() and pointer.is_alive())
     finally:
         listener.stop()
         pointer.stop()

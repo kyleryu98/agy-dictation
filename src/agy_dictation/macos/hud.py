@@ -4,8 +4,70 @@ import time
 import math
 import AppKit as A
 import Foundation as F
+import Quartz as Q
 
 ACTIVE = {"connecting", "recording", "transcribing", "inserting", "cancelling"}
+
+
+def pump_events(app, timeout=0.1):
+    """Dispatch AppKit events and commit window changes, including while hidden.
+
+    A CFRunLoop alone does not drain NSApplication's event queue. In particular,
+    display changes and deferred window updates must reach AppKit as well.
+    Handle one event per turn so a busy queue cannot starve HUD deadlines.
+    """
+    event = app.nextEventMatchingMask_untilDate_inMode_dequeue_(
+        A.NSEventMaskAny,
+        F.NSDate.dateWithTimeIntervalSinceNow_(timeout),
+        F.NSDefaultRunLoopMode,
+        True,
+    )
+    if event is not None:
+        app.sendEvent_(event)
+    app.updateWindows()
+
+
+def rect_values(rect):
+    return rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+
+
+def interaction_screen(screens):
+    """Prefer the foreground window's display without reading its text or using AX."""
+    front = A.NSWorkspace.sharedWorkspace().frontmostApplication()
+    windows = Q.CGWindowListCopyWindowInfo(
+        Q.kCGWindowListOptionOnScreenOnly | Q.kCGWindowListExcludeDesktopElements,
+        Q.kCGNullWindowID,
+    ) if front is not None else []
+    for window in windows or []:
+        if (
+            window.get(Q.kCGWindowOwnerPID) != front.processIdentifier()
+            or window.get(Q.kCGWindowLayer) != 0
+        ):
+            continue
+        bounds = window.get(Q.kCGWindowBounds, {})
+        if bounds.get("Width", 0) <= 0 or bounds.get("Height", 0) <= 0:
+            continue
+        # Quartz uses top-down coordinates relative to the menu-bar display.
+        primary = screens[0].frame()
+        x, width, height = bounds["X"], bounds["Width"], bounds["Height"]
+        y = primary.origin.y + primary.size.height - bounds["Y"] - height
+
+        def overlap(screen):
+            sx, sy, sw, sh = rect_values(screen.frame())
+            return max(0, min(x + width, sx + sw) - max(x, sx)) * max(
+                0, min(y + height, sy + sh) - max(y, sy)
+            )
+
+        screen = max(screens, key=overlap)
+        if overlap(screen) > 0:
+            return screen
+        break
+    pointer = A.NSEvent.mouseLocation()
+    for screen in screens:
+        x, y, width, height = rect_values(screen.frame())
+        if x <= pointer.x < x + width and y <= pointer.y < y + height:
+            return screen
+    return screens[0]
 
 
 def presentation(kind, detail=""):
@@ -78,6 +140,8 @@ class DictationHUD:
         self.started = 0.0
         self.dismiss_at = None
         self.visible = False
+        self.pending_show = False
+        self.last_state = None
         self.screen_layout = None
         style = A.NSWindowStyleMaskBorderless | A.NSWindowStyleMaskNonactivatingPanel
         self.panel = PassivePanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -87,6 +151,8 @@ class DictationHUD:
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(A.NSColor.clearColor())
         self.panel.setHasShadow_(True)
+        # Our deadline/fade owns visibility; do not queue a second AppKit animation.
+        self.panel.setAnimationBehavior_(A.NSWindowAnimationBehaviorNone)
         self.panel.setLevel_(A.NSFloatingWindowLevel)
         self.panel.setHidesOnDeactivate_(False)
         self.panel.setReleasedWhenClosed_(False)
@@ -136,12 +202,16 @@ class DictationHUD:
         view.addSubview_(self.close)
 
     def update(self, kind, detail=""):
+        state = (kind, detail)
+        if state == self.last_state:
+            self.tick()
+            return
+        self.last_state = state
         previous = self.kind
         self.kind = kind
         model = presentation(kind, detail)
         if model is None:
-            if previous not in ACTIVE:
-                self.hide()
+            self.hide()
             return
         title, subtitle, loading, color = model
         colors = {
@@ -169,12 +239,11 @@ class DictationHUD:
                 6 if kind == "error" else 0.85
             )
         )
-        if not self.visible:
-            if not self.place_on_screen(force=True):
-                return
-            self.panel.setAlphaValue_(1)
-            self.panel.orderFrontRegardless()
-            self.visible = True
+        # A new session/status may interrupt the previous toast's fade.
+        self.panel.setAlphaValue_(1)
+        if previous not in ACTIVE or kind == "transcribing":
+            self.screen_layout = None
+        self.pending_show = not self.visible
         self.tick()
 
     def place_on_screen(self, force=False):
@@ -183,14 +252,16 @@ class DictationHUD:
             # Display reconfiguration can temporarily leave no available screen.
             self.screen_layout = None
             return False
-        frames = [screen.visibleFrame() for screen in screens]
         layout = tuple(
-            (r.origin.x, r.origin.y, r.size.width, r.size.height) for r in frames
+            (
+                screen.deviceDescription()["NSScreenNumber"],
+                rect_values(screen.frame()),
+                rect_values(screen.visibleFrame()),
+                screen.backingScaleFactor(),
+            ) for screen in screens
         )
         if force or layout != self.screen_layout:
-            screen = A.NSScreen.mainScreen()
-            if screen not in screens:
-                screen = screens[0]
+            screen = interaction_screen(screens)
             r = screen.visibleFrame()
             size = self.panel.frame().size
             self.panel.setFrameOrigin_(A.NSMakePoint(
@@ -201,10 +272,19 @@ class DictationHUD:
         return True
 
     def tick(self):
-        if not self.visible:
-            return
-        self.place_on_screen()
         now = time.monotonic()
+        # Expiry must not depend on a display being available during hotplug.
+        if self.dismiss_at is not None and now >= self.dismiss_at:
+            self.hide()
+            return
+        if not self.visible and not self.pending_show:
+            return
+        if not self.place_on_screen(force=self.pending_show):
+            return
+        if self.pending_show:
+            self.panel.orderFrontRegardless()
+            self.visible = True
+            self.pending_show = False
         if self.kind == "recording":
             elapsed = int(now - self.started)
             self.timer.setStringValue_(f"{elapsed // 60:02d}:{elapsed % 60:02d}")
@@ -213,12 +293,12 @@ class DictationHUD:
             self.dot.layer().setOpacity_(1)
         if self.dismiss_at is not None:
             left = self.dismiss_at - now
-            if left <= 0:
-                self.hide()
-            elif left < 0.2:
+            if left < 0.2:
                 self.panel.setAlphaValue_(left / 0.2)
 
     def hide(self):
+        self.progress.stopAnimation_(None)
         self.panel.orderOut_(None)
         self.visible = False
+        self.pending_show = False
         self.dismiss_at = None

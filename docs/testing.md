@@ -1,16 +1,49 @@
 # Validation and acceptance
 
-## Current evidence — 2026-09-19
+## Current evidence — 2026-09-20
 
 | Check | Result | Scope |
 | --- | --- | --- |
-| Unit suite | 155 tests passed | Native frameworks, microphone and typing are mocked |
-| Adapted installed frontend | 62 policy tests passed | Existing personal provider transport was retained; its three differing IPC client tests are excluded from this subset |
+| Unit suite | 167 tests passed | Native frameworks, microphone and typing are mocked |
+| HUD regressions against the previous source | Four test groups failed, with seven failing cases; fixed source passes | Interrupted fade, repeated terminal status, ready-state dismissal and showing during display reconfiguration |
+| Native HUD lifecycle | 15 WindowServer/foreground checks passed | Isolated repository HUD; recording, processing, interrupted fade, repeated completion, cancellation, ready and error dismissal |
+| HUD render | Dark rounded fill and transparent corners passed | Offscreen render of the synthetic HUD only; no desktop capture |
+| Display geometry | Mocked placement checks passed | Left/right/above/below displays, spanning windows, disconnect, empty display list, scale, display identity and Dock changes |
 | Ruff and diff whitespace | Passed | Repository source |
-| Native Quartz event tagging | Round-trip passed without posting events | Construction/readback only, not live keyboard delivery |
-| Installed runtime | Source definitions matched; restarted into `idle` and stayed running | Startup, not speech-recognition acceptance |
-| HUD transparency | Offscreen AppKit rendering had zero alpha at all four corners | Not a new screen-compositor test |
+| Installed runtime with these HUD changes | Applied with explicit user authorization; restarted into fresh `idle` | Source hashes matched the tested candidate; old/new service had no onscreen HUD windows; no restart traceback |
+| Physical display disconnect/reconnect | Not yet accepted | Geometry tests and a single connected display do not prove physical hotplug |
 | Current natural-voice/app compatibility | Not yet accepted | Do not claim every Mac app or input field works |
+
+The installed service was inspected read-only. Its status file said the HUD was
+hidden, while WindowServer still listed a visible panel at roughly 44% opacity
+and coordinates from the previous display. The old loop ran Core Foundation but
+did not dispatch AppKit events or call `updateWindows`. The repository now pumps
+AppKit events even while the HUD is hidden, with a bounded wait and an autorelease
+pool. It also acknowledges only the status snapshot actually rendered, so a worker
+update during rendering cannot silently skip completion.
+
+The isolated native check initially found that AppKit's automatic window animation
+kept a dismissed panel in WindowServer's onscreen list after the HUD's own fade.
+Disabling that additional animation made the native checks pass. New states restore
+full opacity, terminal messages keep their original deadline, and a ready state
+clears active UI. A pending show recovers when displays return without reviving an
+expired completion message. Screen selection uses the foreground window's bounds,
+then the pointer as a fallback; it reads no window titles or editable content.
+Window metadata is queried only when placing or relocating the panel, not each tick.
+
+The native checks do not start the service, connect to a provider, record sound,
+install input listeners, type into applications, request permissions or change the
+installed copy. They verify foreground focus remains unchanged. The older tests
+only inspected Python state and mocked coordinates, which could pass while the
+actual macOS panel remained visible.
+
+After the user explicitly authorized application and restart, both installed frontend
+files were backed up and replaced. The personal provider transport, input delivery,
+paths and signal controls were preserved; AST comparison limited service changes to
+the HUD import, AppKit startup and UI loop. The new LaunchAgent process reached
+`idle`, reported a hidden non-key HUD, and WindowServer no longer listed the old or
+new service's panel. This is installation/startup evidence, not a physical display
+hotplug or speech-to-input acceptance result.
 
 The current insertion policy replaces earlier per-chunk acknowledgement experiments.
 It binds the field when recording stops, checks it before writing, and sends Unicode
@@ -25,8 +58,8 @@ interrupt it. It also covers changing apps during recording, target capture fail
 provider finalization failure, cancellation, missing/secure focus, browser focus
 resolution, IPC, private files, packaging and installation boundaries.
 
-The personal frontend was backed up before installation. It uses the repository's
-current frontend with only runtime paths, its existing CLI transport and existing
+On 2026-09-19, the personal frontend was backed up before installation. It used the
+then-current frontend with only runtime paths, its existing CLI transport and existing
 signal control adapted. Provider account/login state and engine code were not
 changed. The separately packaged repository version retains its own authenticated
 IPC protocol.
@@ -65,6 +98,19 @@ permissions or change login state. Use synthetic strings and mocked native APIs.
 A build stages artifacts only; it does not install or run a service. Environment
 checks and a successful startup do not prove actual dictation.
 
+The separate opt-in native HUD check briefly shows a non-activating synthetic HUD:
+
+```sh
+.venv/bin/python scripts/check_hud.py
+```
+
+It compares Python state, AppKit visibility and the actual WindowServer window
+list, and writes synthetic HUD evidence under the ignored `work/hud-check/` folder.
+Keep the foreground application unchanged during the check. This is not a speech
+or installed-service test. The event loop and animation behavior follow Apple's
+[window-update documentation](https://developer.apple.com/documentation/appkit/nsapplication/updatewindows())
+and [automatic-animation documentation](https://developer.apple.com/documentation/appkit/nswindow/animationbehavior-swift.property).
+
 ## Manual acceptance procedure
 
 Use a disposable document and a non-sensitive spoken sentence with a distinct final
@@ -83,6 +129,12 @@ word. Do not save speech, transcripts or unredacted logs in the repository.
 6. Test Esc during recording and processing; missing input fields; denied capability;
    network/provider errors; and rapid repeated shortcuts. Preserve original text
    and recovery data on failure.
+7. Connect and disconnect an external display while idle, recording, processing and
+   showing completion. Repeat with changed primary display, scale, display placement
+   and Dock position. Confirm the HUD stays inside the active display's usable frame,
+   keeps its dark background and disappears about 0.85 seconds after completion or
+   cancellation (six seconds for errors). Start another recording during the fade;
+   its opacity must return to full and the previous deadline must not hide it.
 
 TextEdit, Chrome, Aside, Codex and other Electron/webview editors, Safari, Firefox,
 and custom editable controls are compatibility targets. Empty/read-only surfaces and
