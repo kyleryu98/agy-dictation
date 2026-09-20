@@ -642,13 +642,15 @@ def intercept(kind, event):
 def run_ui(app, hud, keep_running, menu=None, audio=None):
     previous = None
     previous_hud = None
+    last_menu_update = float("-inf")
 
     def refresh():
-        nonlocal previous, previous_hud
+        nonlocal previous, previous_hud, last_menu_update
         with objc.autorelease_pool():
             # The worker may publish another status while update() is running.
             # Only acknowledge the exact snapshot actually sent to the HUD.
             current = status_view
+            changed_state = current != previous
             if current != previous:
                 hud.update(*current)
                 previous = current
@@ -658,7 +660,12 @@ def run_ui(app, hud, keep_running, menu=None, audio=None):
             if audio is not None:
                 snapshot = audio.snapshot()
                 hud.set_audio_status(snapshot)
-                menu.update(current[0], snapshot)
+                now = time.monotonic()
+                if changed_state or now - last_menu_update >= 0.1:
+                    menu.update(current[0], snapshot)
+                    last_menu_update = now
+                else:
+                    menu.update_meter(current[0], snapshot)
             hud_state = (hud.visible, hud.kind)
             if hud_state != previous_hud:
                 with sf.private_directory(BASE) as directory:
@@ -682,12 +689,12 @@ def run_ui(app, hud, keep_running, menu=None, audio=None):
             refresh()
             app.updateWindows()
 
-        timer = F.NSTimer.timerWithTimeInterval_repeats_block_(0.1, True, tracking_tick)
+        timer = F.NSTimer.timerWithTimeInterval_repeats_block_(1 / 30, True, tracking_tick)
         F.NSRunLoop.currentRunLoop().addTimer_forMode_(timer, AK.NSEventTrackingRunLoopMode)
     try:
         while keep_running():
             refresh()
-            pump_events(app)
+            pump_events(app, timeout=1 / 30 if hud.kind == "recording" else 0.1)
             if menu is not None:
                 menu.perform_pending()
     finally:

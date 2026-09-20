@@ -329,7 +329,7 @@ class MacOSTests(unittest.TestCase):
             patch.object(b.sf, "private_directory", return_value=nullcontext(1)),
             patch.object(b.sf, "atomic_write_json"),
         ):
-            def track(_):
+            def track(_, **kwargs):
                 # sendEvent is inside NSMenu's nested tracking loop at this point.
                 now.return_value = 11
                 timer_callbacks[0](None)

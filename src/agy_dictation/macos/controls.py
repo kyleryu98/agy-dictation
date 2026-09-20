@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+METER_INTERVAL = 1 / 30
+
 
 def level_text(status):
     if not status:
@@ -29,6 +31,7 @@ class InputFeedback:
     def __init__(self):
         self.last = None
         self.level = 0.0
+        self.warning_level = 0.0
         self.warning = None
         self.candidate = None
         self.candidate_since = 0.0
@@ -39,22 +42,28 @@ class InputFeedback:
         if not status.get("recording") or status.get("error") or status.get("selected_missing"):
             self.last = None
             self.level = 0.0
+            self.warning_level = 0.0
             self.warning = self.candidate = None
             return {**value, "level": 0, "warning": None}
-        dt = min(0.5, max(0, now - self.last)) if self.last is not None else 0
+        first = self.last is None
+        dt = min(0.5, max(0, now - self.last)) if not first else 0
         if self.last is None:
             self.candidate_since = self.changed_at = now
         self.last = now
         target = status.get("level", 0) if status.get("signal_present") else 0
-        # A quick, rounded attack and slower release prevent syllable-by-syllable flicker.
-        tau = 0.16 if target > self.level else 0.65
+        if first:
+            self.level = self.warning_level = target
+        # Fast meter motion and slow warning decisions are separate signals.
+        tau = 0.025 if target > self.level else 0.10
         self.level += (target - self.level) * (1 - math.exp(-dt / tau))
+        warning_tau = 0.16 if target > self.warning_level else 0.65
+        self.warning_level += (target - self.warning_level) * (1 - math.exp(-dt / warning_tau))
         peak = status.get("peak", 0)
         if not status.get("signal_present"):
             candidate = None  # Missing/stale data is not a low-volume measurement.
         elif peak >= (0.85 if self.warning == "loud" else 0.98):
             candidate = "loud"
-        elif self.level < (0.30 if self.warning == "low" else 0.20):
+        elif self.warning_level < (0.30 if self.warning == "low" else 0.20):
             candidate = "low"
         else:
             candidate = None
@@ -94,7 +103,7 @@ class AudioStatus:
                 self.updated = time.monotonic()
             except Exception:
                 self.value = {}
-            self.wakeup.wait(0.15 if self.value.get("recording") else 1)
+            self.wakeup.wait(METER_INTERVAL if self.value.get("recording") else 1)
             self.wakeup.clear()
 
     def request_refresh(self):

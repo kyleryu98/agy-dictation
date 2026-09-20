@@ -4,9 +4,10 @@
 
 | Check | Result | Scope |
 | --- | --- | --- |
-| Unit suite | 205 tests passed | Native capture, microphone and typing are mocked; transport tests use synthetic PCM on loopback |
+| Unit suite | 208 tests passed | Native capture, microphone and typing are mocked; transport tests use synthetic PCM on loopback |
 | Native custom shortcuts | Save/Enter, cancel, side-specific modifier, disable and reset passed | Synthetic AppKit events inside the settings window; global trigger suspension and modifier/chord separation are policy-tested |
 | Native menu/settings | Passed | Real AppKit controls with synthetic devices, private test preferences and fake login controls; no microphone, input listeners or login change |
+| Meter responsiveness | 30 Hz polling/rendering; 20 synthetic timing phases improved median time to 90% from 352.5 ms to 49.5 ms | Scheduling model only; excludes hardware, IPC, compositor and provider latency |
 | Calm input feedback | Normal syllables/pauses keep a fixed label; low-volume warning waits eight seconds; isolated peaks do not flash warnings | Presentation smoothing only; no audio/provider changes |
 | Native PCM extraction | Exact bytes matched | Synthetic CoreMedia audio sample; no real capture |
 | Audio transport | Exact meter/provider bytes and final-buffer drain passed | Synthetic capture; device loss, failure, stale meter and previous-session callbacks covered |

@@ -185,11 +185,15 @@ class MenuBar:
         self.refresh_devices()
         if self.window is not None:
             self.signal_label.setStringValue_(level_text(audio))
-            self.level.setDoubleValue_(audio.get("level", 0) if kind == "recording" else 0)
+            self.update_meter(kind, audio)
             self.shortcut_editor.set_enabled(not active)
             for control in (self.input_popup, self.sounds):
                 control.setEnabled_(not active and not editing)
             self.autostart.setEnabled_(self.login_available and not active and not editing)
+
+    def update_meter(self, kind, audio):
+        if self.window is not None:
+            self.level.setDoubleValue_(audio.get("level", 0) if kind == "recording" else 0)
 
     def shortcut_capture_changed(self, active):
         self.capture_changed(active)

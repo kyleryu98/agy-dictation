@@ -160,6 +160,27 @@ class AudioStreamTests(unittest.TestCase):
         self.assertEqual(value["error"], "audio_stream_failed")
         self.assertNotIn("private data", json.dumps(value))
 
+    def test_a_short_syllable_is_not_lost_between_meter_polls(self):
+        callbacks = []
+
+        def factory(device, consume, failed):
+            callbacks.append(consume)
+            return Mock()
+
+        stream = MicrophoneStream(factory)
+        self.addCleanup(stream.close)
+        stream.arm({"uid": "synthetic", "name": "Synthetic"})
+        with socket.create_connection(stream.server.getsockname(), timeout=1):
+            self.assertTrue(stream.wait_ready(1))
+            with patch("agy_dictation.audio_stream.time.monotonic", return_value=10) as now:
+                callbacks[0](struct.pack("<160h", *([16000] * 160)))
+                now.return_value = 10.01
+                callbacks[0](bytes(320))
+                now.return_value = 10.03
+                self.assertGreater(stream.snapshot()["level"], 0.8)
+                now.return_value = 10.1
+                self.assertEqual(stream.snapshot()["level"], 0)
+
     def test_stale_meter_is_not_displayed_as_live(self):
         status = AudioStatus(lambda: "{}")
         status.value = {"level": 1, "peak": 1, "recording": True, "signal_present": True}
@@ -203,17 +224,20 @@ class InputFeedbackTests(unittest.TestCase):
         for index in range(2, 30):
             self.assertIsNone(feedback.update(self.sample(), index / 10)["warning"])
 
-    def test_meter_uses_soft_attack_and_release_without_changing_input_data(self):
+    def test_meter_reacts_in_two_frames_and_releases_without_changing_audio(self):
         feedback = InputFeedback()
         original = self.sample(1)
-        feedback.update(original, 0)
-        rising = feedback.update(original, 0.1)["level"]
-        self.assertGreater(rising, 0)
-        self.assertLess(rising, 0.8)
-        falling = feedback.update(self.sample(0), 0.2)["level"]
-        self.assertGreater(falling, rising / 2)
-        self.assertLess(falling, rising)
+        feedback.update(self.sample(0), 0)
+        first = feedback.update(original, 1 / 30)["level"]
+        self.assertGreater(first, 0.7)
+        rising = feedback.update(original, 2 / 30)["level"]
+        self.assertGreater(rising, 0.9)
+        falling = feedback.update(self.sample(0), 2 / 30 + 0.25)["level"]
+        self.assertLess(falling, 0.1)
         self.assertEqual(original["level"], 1)
+
+    def test_first_available_sample_is_visible_immediately(self):
+        self.assertEqual(InputFeedback().update(self.sample(0.7), 0)["level"], 0.7)
 
     def test_a_new_recording_does_not_inherit_previous_warnings(self):
         feedback = InputFeedback()
@@ -246,6 +270,22 @@ class VoiceSessionTests(unittest.TestCase):
         voice.begin()
         voice.choose.assert_called_once_with("selected")
         self.assertEqual(events, ["armed", "provider"])
+
+    def test_fast_meter_polling_does_not_repeat_device_and_settings_io(self):
+        voice = self.session()
+        voice.choose.return_value = {"name": "Synthetic"}
+        with patch("agy_dictation.voice_session.time.monotonic", return_value=10) as now:
+            for _ in range(30):
+                voice.audio_status()
+            voice.devices.assert_called_once()
+            voice.settings.load.assert_called_once()
+            self.assertEqual(voice.microphone.snapshot.call_count, 30)
+            voice.begin()
+            voice.audio_status()
+            self.assertEqual(voice.devices.call_count, 2)
+            now.return_value = 11.1
+            voice.audio_status()
+            self.assertEqual(voice.devices.call_count, 3)
 
     def test_missing_device_does_not_start_capture_or_provider(self):
         voice = self.session()

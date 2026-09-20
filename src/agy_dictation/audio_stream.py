@@ -12,6 +12,7 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
 
 SAMPLE_RATE = 16000
 MAX_CHUNK = SAMPLE_RATE * 2
@@ -53,6 +54,7 @@ class MicrophoneStream:
         self.device = None
         self.levels = {"level": 0, "db": -80, "peak": 0}
         self.last_sample = 0
+        self.meter_frames = deque()
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(("127.0.0.1", 0))
         self.server.listen(1)
@@ -87,6 +89,9 @@ class MicrophoneStream:
                 return
             self.levels = levels
             self.last_sample = time.monotonic()
+            self.meter_frames.append((self.last_sample, levels))
+            while self.meter_frames and self.meter_frames[0][0] < self.last_sample - 0.05:
+                self.meter_frames.popleft()
 
     def fail(self, generation):
         with self.lock:
@@ -113,6 +118,8 @@ class MicrophoneStream:
                 device = self.device
             try:
                 conn.settimeout(0.5)
+                # Small real-time PCM packets must not wait for Nagle/delayed-ACK batching.
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 capture = self.capture_factory(
                     device,
                     lambda data, generation=generation: self.feed(data, generation),
@@ -196,6 +203,7 @@ class MicrophoneStream:
             conn, self.connection = self.connection, None
             self.levels = {"level": 0, "db": -80, "peak": 0}
             self.last_sample = 0
+            self.meter_frames.clear()
             while not self.frames.empty():
                 try:
                     self.frames.get_nowait()
@@ -212,17 +220,25 @@ class MicrophoneStream:
 
     def snapshot(self):
         with self.lock:
-            age = time.monotonic() - self.last_sample if self.last_sample else None
+            now = time.monotonic()
+            age = now - self.last_sample if self.last_sample else None
             if self.recording and (age if age is not None else time.monotonic() - self.started) > 2:
                 self.error = "audio_stream_failed"
             stale = age is None or age > 0.5
+            while self.meter_frames and self.meter_frames[0][0] < now - 0.05:
+                self.meter_frames.popleft()
+            # Retain brief syllable peaks for one display interval, without delaying PCM.
+            levels = max(
+                (frame[1] for frame in self.meter_frames),
+                key=lambda value: value["level"], default=self.levels,
+            )
             return {
                 "recording": self.recording,
                 "input_uid": self.device["uid"] if self.device else None,
                 "input_name": self.device["name"] if self.device else "",
-                "level": 0 if stale else self.levels["level"],
-                "peak": 0 if stale else self.levels["peak"],
-                "db": -80 if stale else self.levels["db"],
+                "level": 0 if stale else levels["level"],
+                "peak": 0 if stale else levels["peak"],
+                "db": -80 if stale else levels["db"],
                 "signal_present": self.recording and not stale,
                 "error": self.error,
             }

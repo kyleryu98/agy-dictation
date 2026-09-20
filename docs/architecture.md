@@ -62,7 +62,11 @@ successful socket send is not recognition-completeness evidence.
 Authenticated `audio-status` IPC returns device metadata and numeric meter values,
 never audio or transcripts. The frontend polls on a background thread and marks stale
 meters unavailable. The HUD normally shows the microphone name without a changing
-volume judgement. Presentation-only attack/release smoothing steadies the bar; a low
+volume judgement. The bar polls and renders at 30 Hz with 25 ms attack/100 ms release; warning
+decisions use a separate, slower envelope. A 50 ms numeric peak window preserves
+short syllables between polls without buffering their audio. Device/preference
+metadata is cached for one second and refreshed when recording starts. TCP_NODELAY
+prevents small audio sends from waiting on Nagle batching. A low
 level must persist for eight seconds before a warning appears. Hysteresis and a
 minimum display time prevent rapid warning toggles. These are input-level indicators,
 not recognition-confidence scores. An AppKit tracking-mode timer keeps HUD expiry and meter updates
