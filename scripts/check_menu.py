@@ -213,7 +213,11 @@ def main():
         hud.shortcut_label = settings.value.shortcut_label
         hud.update("recording")
         hud.set_audio_status(recording)
-        assert abs(hud.progress.doubleValue() - 0.65) < 0.001
+        assert abs(hud.meter.doubleValue() - 0.65) < 0.001
+        assert abs(menu.level.doubleValue() - 0.65) < 0.001
+        hud.set_audio_status({**recording, "level": 0})
+        menu.update("recording", {**recording, "level": 0})
+        assert hud.meter.doubleValue() == menu.level.doubleValue() == 0
         assert "USB 마이크" in hud.subtitle.stringValue()
         menu.actions.toggle_(None)
         menu.tracking = True

@@ -237,7 +237,43 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(original["level"], 1)
 
     def test_first_available_sample_is_visible_immediately(self):
-        self.assertEqual(InputFeedback().update(self.sample(0.7), 0)["level"], 0.7)
+        self.assertAlmostEqual(InputFeedback().update(self.sample(0.7), 0)["level"], 0.55)
+
+    def test_background_noise_does_not_prefill_the_meter(self):
+        # Synthetic PCM at about -42 dB previously filled almost 30% of the bar.
+        measurement = pcm_levels(struct.pack("<320h", *([260, -260] * 160)))
+        self.assertAlmostEqual(measurement["level"], 0.3, delta=0.01)
+        sample = {**self.sample(), **measurement}
+        feedback = InputFeedback()
+        for index in range(30):
+            self.assertEqual(feedback.update(sample, index / 30)["level"], 0)
+        self.assertEqual(sample["db"], measurement["db"])
+        self.assertEqual(sample["level"], measurement["level"])
+
+    def test_display_scale_tracks_input_strength_above_noise_floor(self):
+        for db, expected in ((-80, 0), (-40, 0), (-39, 0.025), (-30, 0.25),
+                             (-20, 0.5), (-10, 0.75), (0, 1)):
+            with self.subTest(db=db):
+                sample = {**self.sample((db + 60) / 60), "db": db}
+                self.assertAlmostEqual(InputFeedback().update(sample, 0)["level"], expected)
+
+    def test_speech_returns_to_fully_empty_meter_on_silence_or_background_noise(self):
+        for quiet_level in (0, 0.3):
+            with self.subTest(quiet_level=quiet_level):
+                feedback = InputFeedback()
+                feedback.update(self.sample(1), 0)
+                for index in range(1, 16):
+                    value = feedback.update(self.sample(quiet_level), index / 30)
+                self.assertEqual(value["level"], 0)
+
+    def test_inactive_failed_or_missing_input_clears_a_previously_full_meter(self):
+        for state in ({"recording": False}, {"signal_present": False},
+                      {"error": "audio_stream_failed"}, {"selected_missing": True}):
+            with self.subTest(state=state):
+                feedback = InputFeedback()
+                feedback.update(self.sample(1), 0)
+                value = feedback.update({**self.sample(1), **state}, 1 / 30)
+                self.assertEqual(value["level"], 0)
 
     def test_a_new_recording_does_not_inherit_previous_warnings(self):
         feedback = InputFeedback()

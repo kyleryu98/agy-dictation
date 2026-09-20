@@ -65,7 +65,7 @@ class MacOSTests(unittest.TestCase):
         view.visible = False
         view.pending_show = False
         view.screen_layout = None
-        for name in ("panel", "dot", "title", "subtitle", "progress", "timer", "close"):
+        for name in ("panel", "dot", "title", "subtitle", "progress", "meter", "timer", "close"):
             setattr(view, name, Mock())
         view.panel.frame.return_value = self.rect(0, 0, 336, 88)
         return view

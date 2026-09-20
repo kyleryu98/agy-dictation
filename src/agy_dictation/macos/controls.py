@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 METER_INTERVAL = 1 / 30
+METER_FLOOR_DB = -40
 
 
 def level_text(status):
@@ -51,11 +52,22 @@ class InputFeedback:
             self.candidate_since = self.changed_at = now
         self.last = now
         target = status.get("level", 0) if status.get("signal_present") else 0
+        # The transport's -60..0 dB scale makes -42 dB background noise look 30% full.
+        # Use a quieter-looking display floor only; do not gate PCM or change warnings.
+        db = status.get("db", target * 60 - 60)
+        display_target = (
+            max(0.0, min(1.0, (db - METER_FLOOR_DB) / -METER_FLOOR_DB))
+            if status.get("signal_present") else 0.0
+        )
         if first:
-            self.level = self.warning_level = target
+            self.level = display_target
+            self.warning_level = target
         # Fast meter motion and slow warning decisions are separate signals.
-        tau = 0.025 if target > self.level else 0.10
-        self.level += (target - self.level) * (1 - math.exp(-dt / tau))
+        tau = 0.025 if display_target > self.level else 0.10
+        self.level += (display_target - self.level) * (1 - math.exp(-dt / tau))
+        # A missing stream must clear immediately; silence must settle to exactly zero.
+        if not status.get("signal_present") or (display_target == 0 and self.level < 0.01):
+            self.level = 0.0
         warning_tau = 0.16 if target > self.warning_level else 0.65
         self.warning_level += (target - self.warning_level) * (1 - math.exp(-dt / warning_tau))
         peak = status.get("peak", 0)

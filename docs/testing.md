@@ -57,6 +57,26 @@ Audio tests verify that the same bytes produce the meter and reach the socket, q
 tail buffers drain at stop, and callbacks from an earlier recording cannot enter a
 later session. They never open a physical or virtual microphone.
 
+The presentation meter uses a fixed -40 to 0 dBFS range: inputs at or below -40 dBFS
+leave it empty, while -30, -20 and -10 dBFS display 25%, 50% and 75%. This is an
+input-strength display, not speech detection or a recognition-confidence score.
+The PCM sent to the provider and the warning thresholds remain unchanged. Synthetic
+tests cover background noise that previously showed roughly 30%, immediate first
+speech, a full return to zero within 0.5 seconds of silence, and immediate clearing
+of missing/inactive input. The native HUD check renders quiet, speech and quiet-after-
+speech states. Actual room noise and quiet speech on the user's microphone still
+require manual acceptance; the floor is not calibrated to individual microphones.
+
+After explicit user authorization, the three meter/UI modules were backed up and
+applied to the existing personal installation. The restarted service reached idle
+with its menu visible, HUD hidden, capture inactive and level zero; updated modules
+matched source hashes, and no new startup errors were found. Existing settings and
+provider/frontend adapters were unchanged. Offscreen rendering of the installed
+native meter verified empty, half-full and empty frames without changing focus.
+A separate standalone HUD run failed its foreground-preservation assertion before
+the meter cases, so that installed full-window focus check remains unverified;
+it is separate from the earlier successful source HUD check and meter pixel checks.
+
 The subsequent installed menu/settings update was backed up before application. Its
 personal CLI/editor transport and input-insertion functions were preserved; the voice
 helper gained the capture coordinator and numeric/device status endpoint. Startup

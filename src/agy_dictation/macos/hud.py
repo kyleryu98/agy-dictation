@@ -90,6 +90,34 @@ def presentation(kind, detail=""):
     return None
 
 
+class LevelMeter(A.NSView):
+    """A literal fill ratio with no progress animation or minimum filled end cap."""
+
+    def setDoubleValue_(self, value):
+        self.value = max(0.0, min(1.0, float(value)))
+        self.setNeedsDisplay_(True)
+        self.setAccessibilityValue_(f"{self.value:.0%}")
+
+    def doubleValue(self):
+        return getattr(self, "value", 0.0)
+
+    def drawRect_(self, rect):
+        bounds = self.bounds()
+        radius = bounds.size.height / 2
+        A.NSColor.secondaryLabelColor().colorWithAlphaComponent_(0.25).setFill()
+        A.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            bounds, radius, radius
+        ).fill()
+        value = self.doubleValue()
+        if value > 0:
+            width = bounds.size.width * value
+            fill = A.NSMakeRect(bounds.origin.x, bounds.origin.y, width, bounds.size.height)
+            A.NSColor.labelColor().setFill()
+            A.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                fill, min(radius, width / 2), radius
+            ).fill()
+
+
 class PassivePanel(A.NSPanel):
     def canBecomeKeyWindow(self):
         return False
@@ -190,6 +218,10 @@ class DictationHUD:
         self.progress.setUsesThreadedAnimation_(True)
         self.progress.setControlSize_(A.NSControlSizeSmall)
         view.addSubview_(self.progress)
+        self.meter = LevelMeter.alloc().initWithFrame_(A.NSMakeRect(46, 12, 264, 3))
+        self.meter.setAccessibilityLabel_("마이크 입력 음량")
+        self.meter.setHidden_(True)
+        view.addSubview_(self.meter)
         self.actions = Actions.alloc().init()
         self.actions.callback = cancel
         self.close = A.NSButton.alloc().initWithFrame_(A.NSMakeRect(297, 44, 24, 26))
@@ -228,12 +260,11 @@ class DictationHUD:
         self.title.setStringValue_(title)
         self.subtitle.setStringValue_(subtitle)
         self.subtitle.setToolTip_(subtitle)
-        self.progress.setHidden_(not loading and kind != "recording")
+        self.progress.setHidden_(not loading)
+        self.meter.setHidden_(kind != "recording")
         self.progress.setIndeterminate_(loading)
         if kind == "recording":
-            self.progress.setMinValue_(0)
-            self.progress.setMaxValue_(1)
-            self.progress.setDoubleValue_(0)
+            self.meter.setDoubleValue_(0)
         if loading:
             self.progress.startAnimation_(None)
         else:
@@ -307,7 +338,7 @@ class DictationHUD:
             return
         from .controls import level_text
 
-        self.progress.setDoubleValue_(audio.get("level", 0))
+        self.meter.setDoubleValue_(audio.get("level", 0))
         name = audio.get("input_name", "")
         warning = audio.get("warning") or audio.get("error") or audio.get("selected_missing")
         text = f"{name} · {level_text(audio)}" if name and warning else name or level_text(audio)

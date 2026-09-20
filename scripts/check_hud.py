@@ -25,6 +25,7 @@ def main():
     import AppKit as A
     import Quartz as Q
     import objc
+    from agy_dictation.macos.controls import InputFeedback
     from agy_dictation.macos.hud import DictationHUD, pump_events, rect_values
 
     output = args.output.resolve()
@@ -79,7 +80,7 @@ def main():
             assert abs(record["alpha"] - alpha) < 0.02, record
             assert abs(record["server_alpha"] - alpha) < 0.02, record
 
-    def render():
+    def render(filename="recording.png"):
         view = hud.panel.contentView()
         bitmap = view.bitmapImageRepForCachingDisplayInRect_(view.bounds())
         view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), bitmap)
@@ -94,13 +95,30 @@ def main():
         assert fill.alphaComponent() > 0.95, fill.alphaComponent()
         assert max(fill.redComponent(), fill.greenComponent(), fill.blueComponent()) < 0.3
         png = bitmap.representationUsingType_properties_(A.NSBitmapImageFileTypePNG, {})
-        assert png.writeToFile_atomically_(str(output / "recording.png"), True)
+        assert png.writeToFile_atomically_(str(output / filename), True)
 
     try:
         hud.update("recording")
         advance(0.15)
         check("recording", True, 1)
         render()
+        feedback = InputFeedback()
+        for index, (db, expected, filename) in enumerate((
+            (-42, 0, "meter-quiet.png"),
+            (-20, 0.5, "meter-speech.png"),
+            (-42, 0, "meter-quiet-after-speech.png"),
+        )):
+            status = feedback.update({
+                "recording": True, "signal_present": True,
+                "input_name": "Synthetic input", "db": db,
+                "level": max(0, (db + 60) / 60), "peak": 0.1,
+            }, index * 0.5)
+            hud.set_audio_status(status)
+            advance(0.05)
+            assert hud.progress.isHidden() and not hud.meter.isHidden()
+            assert abs(hud.meter.doubleValue() - expected) < 0.001
+            check(filename.removesuffix(".png"), True, 1)
+            render(filename)
         hud.update("transcribing")
         advance(0.15)
         check("processing", True, 1)

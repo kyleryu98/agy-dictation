@@ -4,7 +4,7 @@ from collections import deque
 import AppKit as A
 import Foundation as F
 from .controls import level_text
-from .hud import ACTIVE
+from .hud import ACTIVE, LevelMeter
 from .shortcut_editor import ShortcutEditor
 from ..config import DISPLAY_NAME
 
@@ -274,10 +274,8 @@ class MenuBar:
         self.input_popup.setTarget_(self.actions)
         self.input_popup.setAction_("microphonePopup:")
         view.addSubview_(self.input_popup)
-        self.level = A.NSProgressIndicator.alloc().initWithFrame_(A.NSMakeRect(146, 273, 304, 8))
-        self.level.setIndeterminate_(False)
-        self.level.setMinValue_(0)
-        self.level.setMaxValue_(1)
+        self.level = LevelMeter.alloc().initWithFrame_(A.NSMakeRect(146, 273, 304, 8))
+        self.level.setAccessibilityLabel_("마이크 입력 음량")
         view.addSubview_(self.level)
         self.signal_label = label("녹음할 때만 입력을 확인해요", 142, 241, 312, 11)
         view.addSubview_(self.signal_label)
