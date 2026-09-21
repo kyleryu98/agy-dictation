@@ -1,5 +1,44 @@
 # Validation and acceptance
 
+## HUD stacking repair — 2026-09-21
+
+The old HUD used `NSFloatingWindowLevel` (3). An isolated native reproduction
+showed a later overlapping panel at the same level appearing ahead of the HUD.
+`orderFrontRegardless` only changes ordering within a level; higher-level windows
+can still cover it. AppKit/WindowServer visibility alone did not detect this.
+
+The HUD now uses `NSStatusWindowLevel` (25), above normal, floating and modal app
+windows, while leaving higher system/menu levels alone. On supported macOS versions
+it also sets `CanJoinAllApplications` for Stage Manager and other apps' full-screen
+spaces. App/Space notifications request a single non-activating relocation and
+reorder on the next tick; hidden or expired HUDs cannot reappear, and the recording
+timer and dismissal deadline are preserved. Observers are removed on shutdown.
+See Apple's [window-level rules](https://developer.apple.com/documentation/appkit/nswindow/level-swift.property)
+and [cross-app collection behavior](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior-swift.struct/canjoinallapplications).
+
+`scripts/check_hud.py` now verifies actual front-to-back WindowServer order against
+later overlapping normal/floating/modal test panels and posts local synthetic
+workspace notifications to exercise the observer wiring. The isolated macOS 27.0
+check passed 24 visibility/focus checks and three overlap checks, including fading,
+dismissal, meter rendering and unchanged foreground focus. No service, microphone,
+typing, permission request or installed-copy change was involved. Evidence is in
+`work/hud-stacking-regression/result.json` (old failure) and
+`work/hud-stacking-fixed/result.json` (fixed result).
+
+With explicit user authorization, the installed HUD and service cleanup were then
+updated with a backup. The restarted service reached fresh `idle` under a new PID;
+source hashes matched, settings/provider helpers/LaunchAgent remained unchanged,
+and the new log segment contained no traceback or error markers. The same isolated
+native check against installed modules passed all 24 visibility/focus and three
+overlap checks (`work/hud-stacking-install/native-final/result.json`). The repository
+unit suite passed 217 tests; Ruff and diff whitespace checks passed.
+
+Real app switching, full-screen/Stage Manager transitions and external-monitor
+changes still need manual acceptance with the installed candidate. During an active
+HUD, switch apps/desktops and confirm it stays above app windows on the destination
+display without moving the input focus; repeat after dismissal to confirm it stays
+hidden. System menus and higher-level overlays are not an absolute topmost guarantee.
+
 ## Current evidence — 2026-09-20
 
 | Check | Result | Scope |

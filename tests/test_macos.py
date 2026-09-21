@@ -129,6 +129,81 @@ class MacOSTests(unittest.TestCase):
             self.assertTrue(view.place_on_screen())
             view.panel.setFrameOrigin_.assert_called_once_with((332, 20))
 
+    def test_hud_app_or_space_switch_relocates_and_orders_once_without_focus(self):
+        view = self.hud_view()
+        view.visible = True
+        view.kind = "recording"
+        view.screen_layout = ("old-display",)
+        with patch.object(view, "place_on_screen", return_value=True) as place:
+            view.workspace_changed()
+            view.workspace_changed()
+            self.assertIsNone(view.screen_layout)
+            view.tick()
+            place.assert_called_with(force=True)
+            view.tick()
+            place.assert_called_with(force=False)
+        view.panel.orderFrontRegardless.assert_called_once()
+        view.panel.makeKeyAndOrderFront_.assert_not_called()
+        view.panel.makeKeyWindow.assert_not_called()
+        self.assertFalse(view.pending_show)
+
+    def test_hud_workspace_change_cannot_revive_hidden_or_expired_toast(self):
+        for expired in (False, True):
+            with self.subTest(expired=expired):
+                view = self.hud_view()
+                view.visible = expired
+                view.dismiss_at = 1 if expired else None
+                with (
+                    patch.object(hud.time, "monotonic", return_value=2),
+                    patch.object(view, "place_on_screen") as place,
+                ):
+                    view.workspace_changed()
+                    view.tick()
+                self.assertFalse(view.visible)
+                self.assertFalse(view.pending_show)
+                place.assert_not_called()
+                view.panel.orderFrontRegardless.assert_not_called()
+
+    def test_hud_status_update_preserves_pending_workspace_reorder(self):
+        view = self.hud_view()
+        view.visible = True
+        view.kind = "recording"
+        view.workspace_changed()
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", return_value=True) as place,
+        ):
+            view.update("transcribing")
+        place.assert_called_once_with(force=True)
+        view.panel.orderFrontRegardless.assert_called_once()
+
+    def test_hud_workspace_change_preserves_fade_deadline_and_recording_timer(self):
+        view = self.hud_view()
+        view.visible = True
+        view.started = 1
+        view.dismiss_at = 3
+        with (
+            patch.object(view, "place_on_screen", return_value=True),
+            patch.object(hud.time, "monotonic", return_value=2.9),
+        ):
+            view.workspace_changed()
+            view.tick()
+        self.assertEqual(view.started, 1)
+        self.assertEqual(view.dismiss_at, 3)
+        self.assertAlmostEqual(view.panel.setAlphaValue_.call_args.args[0], 0.5)
+
+    def test_hud_dispose_removes_workspace_observers_and_hides(self):
+        view = self.hud_view()
+        view.workspace_center = Mock()
+        view.workspace_observers = [object(), object()]
+        observers = list(view.workspace_observers)
+        view.dispose()
+        self.assertEqual(view.workspace_center.removeObserver_.call_args_list, [
+            unittest.mock.call(observer) for observer in observers
+        ])
+        self.assertEqual(view.workspace_observers, [])
+        view.panel.orderOut_.assert_called_once()
+
     def test_hud_new_recording_restores_opacity_during_completion_fade(self):
         view = self.hud_view()
         with (

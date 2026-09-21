@@ -252,7 +252,7 @@ def main():
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print("Native menu, settings, synthetic PCM and HUD checks passed.")
     finally:
-        hud.hide()
+        hud.dispose()
         menu.close()
         pump_events(app, 0)
 

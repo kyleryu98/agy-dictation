@@ -26,7 +26,7 @@ def main():
     import Quartz as Q
     import objc
     from agy_dictation.macos.controls import InputFeedback
-    from agy_dictation.macos.hud import DictationHUD, pump_events, rect_values
+    from agy_dictation.macos.hud import DictationHUD, PassivePanel, pump_events, rect_values
 
     output = args.output.resolve()
     if not output.is_relative_to(ROOT / "work"):
@@ -37,9 +37,22 @@ def main():
     workspace = A.NSWorkspace.sharedWorkspace()
     foreground = workspace.frontmostApplication().processIdentifier()
     app.finishLaunching()
+    # Finish launch-time ordering before creating multiple synthetic panels.
+    # Otherwise AppKit can activate the test process during its first event pump.
+    for _ in range(10):
+        pump_events(app, timeout=0.02)
+    assert workspace.frontmostApplication().processIdentifier() == foreground
     cancelled = []
     hud = DictationHUD(lambda: cancelled.append(True))
     records = []
+    blocker = PassivePanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        A.NSMakeRect(0, 0, 336, 88),
+        A.NSWindowStyleMaskBorderless | A.NSWindowStyleMaskNonactivatingPanel,
+        A.NSBackingStoreBuffered, False,
+    )
+    blocker.setReleasedWhenClosed_(False)
+    blocker.setHidesOnDeactivate_(False)
+    blocker.setCollectionBehavior_(hud.panel.collectionBehavior())
 
     def advance(seconds):
         end = time.monotonic() + seconds
@@ -61,6 +74,7 @@ def main():
             "server_visible": window is not None,
             "alpha": round(hud.panel.alphaValue(), 3),
             "server_alpha": round(window[Q.kCGWindowAlpha], 3) if window else None,
+            "server_level": window[Q.kCGWindowLayer] if window else None,
             "key_window": bool(hud.panel.isKeyWindow()),
             "foreground_unchanged": (
                 workspace.frontmostApplication().processIdentifier() == foreground
@@ -102,6 +116,36 @@ def main():
         advance(0.15)
         check("recording", True, 1)
         render()
+        # A later overlapping panel must stay behind the HUD. Merely being listed
+        # as visible by AppKit/WindowServer does not prove the HUD is unobscured.
+        blocker.setFrame_display_(hud.panel.frame(), True)
+        for level in (A.NSNormalWindowLevel, A.NSFloatingWindowLevel, A.NSModalPanelWindowLevel):
+            blocker.setLevel_(level)
+            blocker.orderFrontRegardless()
+            advance(0.05)
+            windows = Q.CGWindowListCopyWindowInfo(
+                Q.kCGWindowListOptionOnScreenOnly, Q.kCGNullWindowID
+            )
+            numbers = [w[Q.kCGWindowNumber] for w in windows]
+            above = numbers.index(hud.panel.windowNumber()) < numbers.index(blocker.windowNumber())
+            records.append({"stage": "overlap", "blocker_level": level, "hud_above": above})
+            assert above, records[-1]
+            check(f"above-level-{level}", True, 1)
+        blocker.orderOut_(None)
+        assert hud.panel.level() == A.NSStatusWindowLevel
+        if hasattr(A, "NSWindowCollectionBehaviorCanJoinAllApplications"):
+            assert hud.panel.collectionBehavior() & A.NSWindowCollectionBehaviorCanJoinAllApplications
+        # Exercise the actual local observer wiring without switching user apps
+        # or desktops. Physical app/Space/Stage Manager transitions are manual.
+        for name in (
+            A.NSWorkspaceDidActivateApplicationNotification,
+            A.NSWorkspaceActiveSpaceDidChangeNotification,
+        ):
+            hud.workspace_center.postNotificationName_object_(name, None)
+            assert hud.pending_show
+            advance(0.05)
+            assert not hud.pending_show
+            check(str(name), True, 1)
         feedback = InputFeedback()
         for index, (db, expected, filename) in enumerate((
             (-42, 0, "meter-quiet.png"),
@@ -137,6 +181,11 @@ def main():
         hud.update("idle", "녹음을 취소했습니다.")
         advance(1.05)
         check("cancel-dismissed", False)
+        hud.workspace_center.postNotificationName_object_(
+            A.NSWorkspaceActiveSpaceDidChangeNotification, None
+        )
+        advance(0.05)
+        check("space-change-keeps-dismissed-hud-hidden", False)
         for index in range(3):
             hud.update("recording")
             advance(0.1)
@@ -155,11 +204,16 @@ def main():
         advance(6.1)
         check("error-dismissed", False)
     finally:
-        hud.hide()
+        blocker.orderOut_(None)
+        hud.dispose()
         pump_events(app, timeout=0)
         (output / "result.json").write_text(json.dumps(records, indent=2) + "\n")
-    print(f"Native HUD check passed: {len(records)} WindowServer/focus checks; dark rounded render.")
-    print("Physical display hotplug and installed-service acceptance remain separate checks.")
+    focus_checks = sum("foreground_unchanged" in record for record in records)
+    overlap_checks = sum(record["stage"] == "overlap" for record in records)
+    print(f"Native HUD check passed: {focus_checks} WindowServer/focus checks, "
+          f"{overlap_checks} overlap checks; dark rounded render.")
+    print("Real app/Space/Stage Manager transitions, physical display hotplug and "
+          "installed-service acceptance remain separate checks.")
 
 
 if __name__ == "__main__":

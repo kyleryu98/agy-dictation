@@ -790,7 +790,7 @@ def main():
     finally:
         menu.close()
         audio.close()
-        hud.hide()
+        hud.dispose()
         listener.stop()
         pointer.stop()
         if quit_requested.is_set():

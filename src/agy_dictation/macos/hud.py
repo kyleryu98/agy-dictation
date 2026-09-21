@@ -182,7 +182,9 @@ class DictationHUD:
         self.panel.setHasShadow_(True)
         # Our deadline/fade owns visibility; do not queue a second AppKit animation.
         self.panel.setAnimationBehavior_(A.NSWindowAnimationBehaviorNone)
-        self.panel.setLevel_(A.NSFloatingWindowLevel)
+        # Floating (3) can be covered by other utility panels and modal windows.
+        # Status level stays above application UI without covering system menus.
+        self.panel.setLevel_(A.NSStatusWindowLevel)
         self.panel.setHidesOnDeactivate_(False)
         self.panel.setReleasedWhenClosed_(False)
         self.panel.setCollectionBehavior_(
@@ -190,6 +192,8 @@ class DictationHUD:
             | A.NSWindowCollectionBehaviorFullScreenAuxiliary
             | A.NSWindowCollectionBehaviorStationary
             | A.NSWindowCollectionBehaviorIgnoresCycle
+            # macOS 13+: explicitly join other apps in Stage Manager/full screen.
+            | getattr(A, "NSWindowCollectionBehaviorCanJoinAllApplications", 0)
         )
         self.panel.setAppearance_(A.NSAppearance.appearanceNamed_(A.NSAppearanceNameDarkAqua))
         view = HUDBackground.alloc().initWithFrame_(A.NSMakeRect(0, 0, 336, 88))
@@ -233,6 +237,30 @@ class DictationHUD:
         self.close.setToolTip_("녹음 취소 (Esc)")
         self.close.setAccessibilityLabel_("녹음 취소")
         view.addSubview_(self.close)
+        self.workspace_center = A.NSWorkspace.sharedWorkspace().notificationCenter()
+        self.workspace_observers = [
+            self.workspace_center.addObserverForName_object_queue_usingBlock_(
+                name, None, F.NSOperationQueue.mainQueue(),
+                lambda notification: self.workspace_changed(),
+            )
+            for name in (
+                A.NSWorkspaceDidActivateApplicationNotification,
+                A.NSWorkspaceActiveSpaceDidChangeNotification,
+            )
+        ]
+
+    def workspace_changed(self):
+        # Coalesce transitions until the next tick. Reposition and re-order only
+        # a live HUD; never activate the app or resurrect a dismissed toast.
+        if self.visible or self.pending_show:
+            self.screen_layout = None
+            self.pending_show = True
+
+    def dispose(self):
+        for observer in self.workspace_observers:
+            self.workspace_center.removeObserver_(observer)
+        self.workspace_observers.clear()
+        self.hide()
 
     def update(self, kind, detail=""):
         state = (kind, detail)
@@ -282,7 +310,7 @@ class DictationHUD:
         self.panel.setAlphaValue_(1)
         if previous not in ACTIVE or kind == "transcribing":
             self.screen_layout = None
-        self.pending_show = not self.visible
+        self.pending_show = self.pending_show or not self.visible
         self.tick()
 
     def place_on_screen(self, force=False):
