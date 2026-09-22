@@ -23,6 +23,7 @@ from ..config import BASE, LOG, ENGINE_APP, ENGINE_BOOTSTRAP, SERVICE_LABEL, ens
 from .. import ipc, secure_files as sf
 from ..settings import Preferences, Settings
 from ..shortcuts import ModifierTap
+from ..startup import START_REQUEST_TIMEOUT, start_backend
 
 CTRL = Q.kCGEventFlagMaskControl
 OTHER = Q.kCGEventFlagMaskCommand | Q.kCGEventFlagMaskAlternate | Q.kCGEventFlagMaskShift
@@ -175,7 +176,7 @@ class CLI:
                     time.sleep(0.2)
             else:
                 raise EngineError("engine_unavailable")
-        self.request("start")
+        self.request("start", START_REQUEST_TIMEOUT)
 
     def begin(self):
         self.start()
@@ -467,7 +468,8 @@ def save_recovery(text):
 def worker():
     global busy, session
     try:
-        backend.start()
+        if not start_backend(backend, quit_requested, status):
+            return
         status("idle", "준비됨 · Ctrl + ₩")
     except Exception as e:
         backend.close()

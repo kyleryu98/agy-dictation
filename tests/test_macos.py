@@ -612,6 +612,15 @@ class MacOSTests(unittest.TestCase):
         request.assert_called_once_with("ping", 1)
         run.assert_not_called()
 
+    def test_start_reply_deadline_allows_provider_cleanup(self):
+        from agy_dictation.startup import CLI_READY_TIMEOUT, START_REQUEST_TIMEOUT
+
+        cli = b.CLI()
+        with patch.object(cli, "request") as request:
+            cli.start()
+        self.assertGreater(START_REQUEST_TIMEOUT, CLI_READY_TIMEOUT + 7)
+        self.assertEqual(request.call_args_list[-1].args, ("start", START_REQUEST_TIMEOUT))
+
     def test_worker_displays_safe_startup_diagnosis_only(self):
         class StopWorker(BaseException):
             pass

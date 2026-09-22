@@ -15,6 +15,7 @@ import struct
 import uuid
 import pyte
 from .ipc import RemoteError
+from .startup import CLI_READY_TIMEOUT
 from .config import BASE, AGY, EDITOR_BRIDGE, ensure_private_dir
 from .secure_files import (
     atomic_write_json,
@@ -185,7 +186,7 @@ class CLI:
             raise
 
     def _wait_ready(self, folder):
-        end = time.monotonic() + 45
+        end = time.monotonic() + CLI_READY_TIMEOUT
         while time.monotonic() < end:
             if self.cancelled.is_set():
                 raise BridgeError("cancelled")
@@ -201,7 +202,7 @@ class CLI:
             if self.proc.poll() is not None:
                 raise BridgeError("cli_start_failed")
             time.sleep(0.1)
-        raise BridgeError("login_required")
+        raise BridgeError("startup_timeout")
 
     def begin(self):
         if self._session_used or (

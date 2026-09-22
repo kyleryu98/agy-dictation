@@ -26,6 +26,7 @@ ERRORS = {
     "cli_start_failed": "AGY CLI를 시작하지 못했습니다. CLI 설치 경로를 확인해 주세요.",
     "cli_exited": "AGY CLI가 종료됐습니다. 다시 시작해 주세요.",
     "cli_timeout": "AGY CLI 응답 대기 시간이 초과됐습니다.",
+    "startup_timeout": "AGY CLI 준비 시간이 초과됐습니다. 잠시 후 엔진을 다시 시작해 주세요.",
     "trust_required": "전사용 voice-session 폴더에서 AGY CLI를 직접 실행해 로그인과 폴더 신뢰를 확인해 주세요.",
     "unexpected_project": "예상하지 못한 작업 폴더 신뢰 요청입니다. 전사용 폴더 설정을 확인해 주세요.",
     "terms_required": "AGY CLI를 직접 실행해 이용약관을 확인해 주세요.",

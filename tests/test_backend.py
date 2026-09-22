@@ -235,7 +235,7 @@ class BackendTests(unittest.TestCase):
             (f"Do you trust the contents of this project? {self.root}", "trust_required"),
             ("Do you trust the contents of this project? SECRET", "unexpected_project"),
             ("Terms of Service & Data Use SECRET", "terms_required"),
-            ("SECRET", "login_required"),
+            ("SECRET", "startup_timeout"),
         ):
             with self.subTest(code=code):
                 self.cli = backend.CLI()

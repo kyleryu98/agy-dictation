@@ -1,5 +1,33 @@
 # Validation and acceptance
 
+## Startup recovery — 2026-09-23
+
+The provider readiness deadline and the frontend IPC deadline were both 45 seconds.
+An initialization delay could therefore surface as a transport timeout before the
+provider sent its failure. The worker then waited for a user action indefinitely;
+because the frontend remained alive, LaunchAgent KeepAlive did not recover it.
+
+Startup requests now allow 60 seconds for the provider's 45-second readiness check,
+child cleanup and reply. A missing ready banner reports `startup_timeout`, rather
+than claiming the account needs login. Initial startup retries known transient
+failures at most twice, after 5 and 15 seconds, with cleanup between attempts.
+Shutdown interrupts the backoff. Permission, trust, terms and explicit login
+errors are not retried. Recovery never starts recording or repeats text insertion.
+
+The 224-test suite and Ruff passed. Mocked regressions cover recovery without a
+user command, exhausted retries, shutdown, non-retryable failures and the deadline
+margin. A separate native-free check of the installed compatibility adapter
+verified error-code propagation and automatic recovery. With explicit user
+authorization, the existing installation was backed up and updated while retaining
+its app identity, settings, HUD, LaunchAgent and recording/insertion functions.
+Both frontend and engine were stopped, and a new launch reached fresh `idle`
+without a manual engine restart. Capture was inactive and the new logs contained
+no errors or tracebacks. Local evidence: `work/startup-recovery/`.
+
+An actual logout/reboot is still needed to validate the complete login sequence.
+The underlying reason the external CLI was slow during earlier boots is not
+established; tests demonstrate bounded recovery, not a diagnosis of its internals.
+
 ## HUD stacking repair — 2026-09-21
 
 The old HUD used `NSFloatingWindowLevel` (3). An isolated native reproduction
