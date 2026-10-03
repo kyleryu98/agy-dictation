@@ -28,6 +28,18 @@ An actual logout/reboot is still needed to validate the complete login sequence.
 The underlying reason the external CLI was slow during earlier boots is not
 established; tests demonstrate bounded recovery, not a diagnosis of its internals.
 
+## HUD front-order reassertion — 2026-10-03
+
+The 2026-09-21 repair reordered the HUD only when it was first shown or after an
+app/Space notification. A later panel at the same status level, a transition that
+finished without a notification, or a new session reusing a still-visible toast
+could leave the HUD behind another window. A visible HUD now calls
+`orderFrontRegardless` at most every 0.5 s (immediately if AppKit reports it hidden),
+and every new session forces one reorder. No window metadata is read for this and
+focus is unchanged. Windows above the status level remain out of scope.
+`scripts/check_hud.py` adds a same-level blocker check
+(`work/hud-stacking-reorder/result.json`: 25 WindowServer/focus and 4 overlap checks).
+
 ## HUD stacking repair — 2026-09-21
 
 The old HUD used `NSFloatingWindowLevel` (3). An isolated native reproduction

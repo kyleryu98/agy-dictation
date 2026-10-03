@@ -26,7 +26,9 @@ def main():
     import Quartz as Q
     import objc
     from agy_dictation.macos.controls import InputFeedback
-    from agy_dictation.macos.hud import DictationHUD, PassivePanel, pump_events, rect_values
+    from agy_dictation.macos.hud import (
+        REORDER_INTERVAL, DictationHUD, PassivePanel, pump_events, rect_values,
+    )
 
     output = args.output.resolve()
     if not output.is_relative_to(ROOT / "work"):
@@ -131,6 +133,21 @@ def main():
             records.append({"stage": "overlap", "blocker_level": level, "hud_above": above})
             assert above, records[-1]
             check(f"above-level-{level}", True, 1)
+        # 같은 레벨(25)에 나중에 뜬 다른 패널은 잠시 앞설 수 있지만, 표시 중인
+        # HUD는 재정렬 주기 안에 다시 맨 앞을 되찾아야 한다.
+        blocker.setLevel_(A.NSStatusWindowLevel)
+        blocker.orderFrontRegardless()
+        advance(REORDER_INTERVAL + 0.15)
+        windows = Q.CGWindowListCopyWindowInfo(
+            Q.kCGWindowListOptionOnScreenOnly, Q.kCGNullWindowID
+        )
+        numbers = [w[Q.kCGWindowNumber] for w in windows]
+        above = numbers.index(hud.panel.windowNumber()) < numbers.index(blocker.windowNumber())
+        records.append({
+            "stage": "overlap", "blocker_level": A.NSStatusWindowLevel, "hud_above": above,
+        })
+        assert above, records[-1]
+        check("reclaims-front-over-same-level", True, 1)
         blocker.orderOut_(None)
         assert hud.panel.level() == A.NSStatusWindowLevel
         if hasattr(A, "NSWindowCollectionBehaviorCanJoinAllApplications"):

@@ -7,6 +7,9 @@ import Quartz as Q
 from ..config import DISPLAY_NAME
 
 ACTIVE = {"connecting", "recording", "transcribing", "inserting", "cancelling"}
+# 같은 레벨 창은 나중에 올린 쪽이 앞에 선다. 표시 중인 HUD는 이 주기로
+# 순서만 다시 맞춘다(창 메타데이터 조회·활성화·키 윈도우 변경 없음).
+REORDER_INTERVAL = 0.5
 
 
 def pump_events(app, timeout=0.1):
@@ -169,6 +172,7 @@ class DictationHUD:
         self.dismiss_at = None
         self.visible = False
         self.pending_show = False
+        self.last_ordered = float("-inf")
         self.last_state = None
         self.screen_layout = None
         self.shortcut_label = "Ctrl + ₩"
@@ -310,6 +314,8 @@ class DictationHUD:
         self.panel.setAlphaValue_(1)
         if previous not in ACTIVE or kind == "transcribing":
             self.screen_layout = None
+            # 남아 있던 완료/오류 토스트를 재사용할 때도 새 세션은 맨 앞에서 시작한다.
+            self.pending_show = True
         self.pending_show = self.pending_show or not self.visible
         self.tick()
 
@@ -348,8 +354,16 @@ class DictationHUD:
             return
         if not self.place_on_screen(force=self.pending_show):
             return
-        if self.pending_show:
+        # 같은 레벨에 나중에 뜬 다른 앱 패널, 알림 없이 끝난 Space/전체화면 전환,
+        # 잠자기 해제 뒤에도 HUD가 가려진 채 남지 않도록 순서만 주기적으로 되찾는다.
+        # orderFrontRegardless는 앱 활성화나 키 윈도우 변경을 일으키지 않는다.
+        if (
+            self.pending_show
+            or now - self.last_ordered >= REORDER_INTERVAL
+            or not self.panel.isVisible()
+        ):
             self.panel.orderFrontRegardless()
+            self.last_ordered = now
             self.visible = True
             self.pending_show = False
         if self.kind == "recording":

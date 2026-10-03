@@ -64,6 +64,7 @@ class MacOSTests(unittest.TestCase):
         view.dismiss_at = None
         view.visible = False
         view.pending_show = False
+        view.last_ordered = float("-inf")
         view.screen_layout = None
         for name in ("panel", "dot", "title", "subtitle", "progress", "meter", "timer", "close"):
             setattr(view, name, Mock())
@@ -146,6 +147,59 @@ class MacOSTests(unittest.TestCase):
         view.panel.makeKeyAndOrderFront_.assert_not_called()
         view.panel.makeKeyWindow.assert_not_called()
         self.assertFalse(view.pending_show)
+
+    def test_visible_hud_reclaims_front_order_periodically_without_focus(self):
+        # A later same-level panel from another app covers the HUD until it reorders.
+        view = self.hud_view()
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", return_value=True),
+            patch.object(hud.time, "monotonic", return_value=10) as now,
+        ):
+            view.update("recording")
+            view.panel.orderFrontRegardless.assert_called_once()
+            now.return_value = 10 + hud.REORDER_INTERVAL / 2
+            view.tick()
+            view.panel.orderFrontRegardless.assert_called_once()
+            now.return_value = 10 + hud.REORDER_INTERVAL
+            view.tick()
+            self.assertEqual(view.panel.orderFrontRegardless.call_count, 2)
+        view.panel.makeKeyAndOrderFront_.assert_not_called()
+        view.panel.makeKeyWindow.assert_not_called()
+
+    def test_hud_reorders_immediately_when_window_server_dropped_it(self):
+        view = self.hud_view()
+        view.visible = True
+        view.kind = "recording"
+        view.panel.isVisible.return_value = False
+        with (
+            patch.object(view, "place_on_screen", return_value=True),
+            patch.object(hud.time, "monotonic", return_value=10),
+        ):
+            view.last_ordered = 10
+            view.tick()
+        view.panel.orderFrontRegardless.assert_called_once()
+
+    def test_new_session_over_lingering_toast_orders_front_again(self):
+        view = self.hud_view()
+        with (
+            patch.object(hud, "A", Mock()),
+            patch.object(view, "place_on_screen", return_value=True) as place,
+            patch.object(hud.time, "monotonic", return_value=10) as now,
+        ):
+            view.update("error", "synthetic failure")
+            self.assertTrue(view.visible)
+            view.panel.orderFrontRegardless.reset_mock()
+            now.return_value = 10.1
+            view.update("recording")
+            place.assert_called_with(force=True)
+        view.panel.orderFrontRegardless.assert_called_once()
+
+    def test_hidden_hud_is_never_reordered_by_periodic_tick(self):
+        view = self.hud_view()
+        with patch.object(hud.time, "monotonic", return_value=100):
+            view.tick()
+        view.panel.orderFrontRegardless.assert_not_called()
 
     def test_hud_workspace_change_cannot_revive_hidden_or_expired_toast(self):
         for expired in (False, True):
