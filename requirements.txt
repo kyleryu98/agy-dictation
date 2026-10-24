@@ -11,4 +11,4 @@ pyobjc-framework-CoreText==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
 pyte==0.8.2
 six==1.17.0; sys_platform == "darwin"
-wcwidth==0.8.4
+wcwidth==0.9.3
